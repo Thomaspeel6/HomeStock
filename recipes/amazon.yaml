@@ -1,0 +1,27 @@
+retailer: amazon
+country: GB
+status: provisional   # KNOWN RISK — see notes; verify during inbox audit
+sender_domains:
+  - amazon.co.uk
+  - amazon.com
+canonical_email:
+  type: order_confirmation
+  why: >
+    Amazon does not substitute, so the confirmation is authoritative when it
+    carries line items. KNOWN RISK: Amazon stripped itemised details from
+    most confirmation emails (~2023). Check the inbox audit: if confirmations
+    are bare, try the invoice/dispatch email; failing that, accept Amazon as
+    partial coverage and log skips to ingest_runs.
+order_id:
+  location: "Order #XXX-XXXXXXX-XXXXXXX in subject and body"
+  fallback: message-id
+line_items:
+  location: item list in the body when present; otherwise absent (skip + log)
+  notes: >
+    Only ingest consumable household goods (groceries, toiletries, cleaning,
+    pet food). Skip electronics, books, one-off durables — they poison the
+    repurchase-interval model and are not pantry state.
+example: |
+  Order #203-XXXXXXX-XXXXXXX
+  Finish Dishwasher Tablets, 100 pack ... £12.99
+  Andrex Toilet Roll, 24 rolls .......... £11.50

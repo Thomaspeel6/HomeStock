@@ -1,0 +1,30 @@
+retailer: tesco
+country: GB
+status: provisional   # finalize after the founder's inbox-coverage audit
+sender_domains:
+  - tesco.com
+  - e.tesco.com
+canonical_email:
+  type: delivery_receipt
+  why: >
+    Tesco substitutes and removes items after order confirmation. The
+    post-delivery receipt ("Your receipt" / "Here's what we delivered")
+    reflects what actually entered the house; the confirmation does not.
+    Idempotency keys on the order number, so confirmation emails for the
+    same order are ignored by the server anyway.
+order_id:
+  location: order number in the subject line and header block
+  fallback: message-id
+line_items:
+  location: itemised table in the email body, grouped by department
+  notes: >
+    Substituted items appear with a "substituted" marker — record the
+    substitute, not the original. Multibuy discounts and Clubcard savings
+    appear as negative price lines — skip them, they are not items.
+    Loose produce is priced by weight; use unit kg/g from the line.
+example: |
+  Order number: XXXX-XXXXXX
+  Semi Skimmed Milk 2.27L ........ 1 @ £1.55
+  WHL CHKN 1.2KG ................. 1 @ £3.90
+  Braeburn Apples Loose .......... 0.62kg @ £1.24
+  * substituted: Hovis Soft White 800g -> Tesco Soft White 800g
