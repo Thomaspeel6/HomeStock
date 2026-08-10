@@ -1,0 +1,33 @@
+[project]
+name = "homestock-mcp"
+version = "0.1.0"
+description = "Local-first household inventory for AI agents. One SQLite file, one MCP server, zero cloud."
+readme = "README.md"
+license = { text = "MIT" }
+authors = [{ name = "Thomas Peel" }]
+requires-python = ">=3.11"
+dependencies = ["mcp>=1.26,<2"]
+keywords = ["mcp", "inventory", "household", "local-first", "agents"]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "License :: OSI Approved :: MIT License",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+]
+
+[project.urls]
+Repository = "https://github.com/Thomaspeel6/HomeStock"
+
+[project.scripts]
+homestock = "homestock.server:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["homestock"]
+
+[dependency-groups]
+dev = ["pytest>=8"]

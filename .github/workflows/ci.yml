@@ -1,0 +1,36 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: macos-latest
+    strategy:
+      matrix:
+        python-version: ["3.11", "3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - run: uv run pytest -q
+      - name: MCP handshake smoke test
+        run: |
+          printf '%s\n' \
+            '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"ci","version":"0"}}}' \
+            '{"jsonrpc":"2.0","method":"notifications/initialized"}' \
+            '{"jsonrpc":"2.0","id":2,"method":"tools/list"}' \
+          | uv run python -m homestock 2>/dev/null \
+          | python3 -c "
+          import json,sys
+          tools=[]
+          for line in sys.stdin:
+              m=json.loads(line)
+              if m.get('id')==2:
+                  tools=sorted(t['name'] for t in m['result']['tools'])
+          expected=['add_items','get_events','get_stock','record_ingest_run','void_event','what_should_i_order']
+          assert tools==expected, tools
+          print('MCP handshake OK:', tools)
+          "

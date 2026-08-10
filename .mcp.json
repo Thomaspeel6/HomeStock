@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "homestock": {
+      "command": "uv",
+      "args": ["run", "python", "-m", "homestock"]
+    }
+  }
+}
