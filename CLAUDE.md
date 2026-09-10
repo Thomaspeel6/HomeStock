@@ -15,16 +15,17 @@ OCR pipelines and per-retailer parsers. Do not build from it.
 
 ## Status
 
-Alpha, macOS-first. Engine and pantry window built and tested (31 tests, CI on
-macOS / Python 3.11–3.13). The `.app` bundle, built-in email ingestion, and
-PyPI release are specified in PRD v3 but **not built** — installation still
-needs a terminal.
+Alpha, macOS-first. Engine, pantry window, and capture from phone or laptop
+built and tested (52 tests, CI on macOS / Python 3.11–3.13). The `.app` bundle,
+built-in email ingestion, and PyPI release are specified in PRD v3 but **not
+built** — installation still needs a terminal.
 
 ## Architecture
 
 ```
-homestock.db  (SQLite, WAL)  <--  homestock/server.py   12 MCP tools, stdio
-                             <--  homestock/ui.py       local HTTP, 127.0.0.1
+homestock.db  (SQLite, WAL)  <--  homestock/server.py   19 MCP tools, stdio
+                             <--  homestock/ui.py       local HTTP + capture
+                                                        127.0.0.1, or LAN if asked
 ```
 
 Two processes writing one file is the intended topology. WAL + `busy_timeout`
@@ -39,6 +40,12 @@ makes writers queue instead of erroring — see `test_two_process_concurrent_wri
   model and resets the clock.
 - **Confidence** is the coefficient of variation over intervals. Surfaced, not
   hidden.
+- **Aliases** absorb the fact that four input paths name things four ways.
+  Resolution happens on the way in (`_resolve`), so one item keeps one
+  repurchase cycle. `merge_items` records an alias so drift cannot recur.
+- **Captures are an inbox, not stock.** Capture must be instant and offline;
+  reading needs a model. An agent works the queue and closes each one — an
+  unreadable photo is skipped with a reason, never guessed at.
 
 ## Non-negotiables
 
@@ -48,8 +55,13 @@ makes writers queue instead of erroring — see `test_two_process_concurrent_wri
 2. **Never ask the user to inventory anything.** Stock is inferred from
    purchases; corrections are optional and always one tap.
 3. **Uncertainty is data, not failure.** Show the reasoning behind every number.
-4. **Nothing leaves the machine.** No telemetry, no accounts, no network calls.
+4. **Nothing leaves the machine.** No telemetry, no accounts, no outbound calls.
    `get_health()` returns counts and dates only — never item names.
+   LAN mode (`--lan`) is opt-in and never the default: it is the one place
+   where a mistake exposes a household to its own network. Unpaired devices
+   read nothing; pairing codes expire and burn after five wrong guesses; the
+   cookie proves *which device*, the header proves *which page*, and writes
+   require the header. Do not let a cookie alone authorise a write.
 5. **Migrations are append-only.** `MIGRATIONS` in `homestock/server.py` is a
    public contract; strangers hold these database files. Never edit a shipped
    migration. Every schema change needs an upgrade-preserves-data test.

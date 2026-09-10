@@ -16,6 +16,29 @@ now reports it: `days_since_ingest`, `receipt_lines`, `stale`.
 **Why:** PRD v2 §12 made this the gate for everything. It came due 2026-09-10 and was never measured.
 **Effort:** S. **Depends on:** nothing.
 
+## P1 — Loyalty-export import (Clubcard / Nectar)
+**What:** Import an itemised purchase history from a UK GDPR data request.
+**Why:** Probably the fastest route from empty to useful — years of history in one file,
+legally clean, user-initiated, no scraping and no OAuth. Directly attacks the cold-start
+problem that PRD v2 §9 calls the make-or-break.
+**Context:** Shape is unknown until someone actually requests theirs; likely CSV. The model
+maps columns and calls add_items with source='loyalty', which the schema already accepts.
+**Effort:** M. **Depends on:** one real export to look at.
+
+## P2 — Barcode product lookup (Open Food Facts)
+**What:** Turn a scanned barcode into a product name and pack size locally.
+**Why:** Today a barcode reaches the inbox as bare digits for the model to name. Works, but a
+cached OFF dump would make it exact and offline.
+**Context:** Deliberately deferred in PRD v3 §7 — adds a dependency for a marginal gain.
+**Effort:** M.
+
+## P2 — HTTPS for LAN mode
+**What:** Self-signed certificate so phone capture is not plain HTTP.
+**Why:** Anyone already on the wifi who can sniff traffic can read a capture in flight.
+**Context:** Accepted limitation in PRD v3 §6b — a trust prompt is worse onboarding for a
+threat most home networks do not face. Revisit for shared or workplace networks.
+**Effort:** M.
+
 ## P1 — Built-in ingestion (IMAP first, then Gmail OAuth)
 **What:** Code that fetches receipt mail on a schedule, per PRD v3 §6 — the app owns OAuth,
 sender filter, fetching, cursor and skip logging; the model still reads the receipt.

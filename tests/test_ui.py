@@ -5,6 +5,7 @@ import threading
 import urllib.error
 import urllib.request
 from datetime import date, timedelta
+from pathlib import Path
 from http.server import ThreadingHTTPServer
 
 import pytest
@@ -132,3 +133,172 @@ def test_item_names_are_escaped_into_the_page(http):
     body = json.loads(_open(f"{http}/api/state").read())
     assert body["shelf"][0]["name"] == "<script>alert(1)</script> tea"
     assert "<script>alert(1)</script>" not in _open(f"{http}/").read().decode()
+
+
+# --- capture: phone and laptop ----------------------------------------------
+
+# A real 1x1 PNG, so the decoder is exercised rather than mocked.
+PNG = ("data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAA"
+       "DUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==")
+
+
+@pytest.fixture(autouse=True)
+def loopback(monkeypatch):
+    """Every test starts on the safe default; LAN tests opt in explicitly."""
+    monkeypatch.setattr(ui, "LAN_MODE", False)
+    monkeypatch.setattr(ui, "_pair", {"code": None, "expires": 0.0, "attempts": 0})
+
+
+def get(base, path, cookie=None):
+    req = urllib.request.Request(f"{base}{path}")
+    if cookie:
+        req.add_header("Cookie", cookie)
+    return _open(req)
+
+
+def capture(base, payload, token=ui.TOKEN, cookie=None):
+    req = urllib.request.Request(
+        f"{base}/api/capture", data=json.dumps(payload).encode(),
+        headers={"content-type": "application/json", "x-homestock-token": token},
+    )
+    if cookie:
+        req.add_header("Cookie", cookie)
+    return _open(req)
+
+
+def pair(base, code):
+    req = urllib.request.Request(
+        f"{base}/api/pair", data=json.dumps({"code": code}).encode(),
+        headers={"content-type": "application/json"})
+    return _open(req)
+
+
+def test_photo_capture_writes_a_file_and_queues_it(http, fresh_db):
+    r = json.loads(capture(http, {"kind": "receipt_photo", "data_url": PNG,
+                                  "device": "phone"}).read())
+    assert r["kind"] == "receipt_photo" and r["status"] == "pending"
+
+    [row] = _fn(server.list_captures)("pending")
+    assert row["device"] == "phone" and row["mime"] == "image/png"
+    stored = Path(row["path"])
+    assert stored.exists() and stored.read_bytes()[:8] == b"\x89PNG\r\n\x1a\n"
+    # photos live beside the database, not inside it
+    assert stored.parent == fresh_db.parent / "captures"
+
+
+def test_barcode_and_note_capture_from_either_device(http):
+    capture(http, {"kind": "barcode", "text": "5000119003478", "device": "phone"})
+    capture(http, {"kind": "note", "text": "2 milk, bread, 6 eggs", "device": "laptop"})
+    rows = _fn(server.list_captures)("pending")
+    assert [(r["kind"], r["device"]) for r in rows] == [
+        ("barcode", "phone"), ("note", "laptop")]
+    assert json.loads(get(http, "/api/captures").read())[0]["text"] == "5000119003478"
+
+
+def test_junk_uploads_are_refused(http):
+    for payload in [{"kind": "receipt_photo", "data_url": "data:image/png;base64,!!!"},
+                    {"kind": "receipt_photo", "data_url": "data:text/html;base64,PHNjcmlwdD4="},
+                    {"kind": "receipt_photo", "data_url": "not-a-data-url"},
+                    {"kind": "note", "text": "   "},
+                    {"kind": "telepathy", "text": "milk"}]:
+        with pytest.raises(urllib.error.HTTPError) as e:
+            capture(http, payload)
+        assert e.value.code == 400
+    assert _fn(server.list_captures)("pending") == []
+
+
+def test_capture_still_needs_the_token_on_loopback(http):
+    with pytest.raises(urllib.error.HTTPError) as e:
+        capture(http, {"kind": "note", "text": "milk"}, token="guessed")
+    assert e.value.code == 403
+    assert _fn(server.list_captures)("pending") == []
+
+
+# --- LAN mode: nothing is readable until a device pairs ----------------------
+
+def test_lan_mode_hides_everything_until_paired(http, monkeypatch):
+    monkeypatch.setattr(ui, "LAN_MODE", True)
+    buy("milk", 5, "m1")
+
+    # the pantry itself must not leak to an unpaired device on the network
+    for path in ("/api/state", "/api/captures"):
+        with pytest.raises(urllib.error.HTTPError) as e:
+            get(http, path)
+        assert e.value.code == 403
+    with pytest.raises(urllib.error.HTTPError) as e:
+        capture(http, {"kind": "note", "text": "milk"}, token="guessed")
+    assert e.value.code == 403
+
+    # and the pages offer pairing rather than content
+    assert b"Pairing code" in get(http, "/").read()
+    assert b"Buy these" not in get(http, "/capture").read()
+
+
+def test_pairing_grants_access_and_a_wrong_code_does_not(http, monkeypatch):
+    monkeypatch.setattr(ui, "LAN_MODE", True)
+    buy("milk", 5, "m1")
+    code = ui.new_pair_code()
+
+    with pytest.raises(urllib.error.HTTPError) as e:
+        pair(http, "000000" if code != "000000" else "111111")
+    assert e.value.code == 403
+
+    resp = pair(http, code)
+    cookie = resp.headers["Set-Cookie"]
+    assert "SameSite=Strict" in cookie and ui.TOKEN in cookie
+
+    jar = cookie.split(";")[0]
+    assert json.loads(get(http, "/api/state", cookie=jar).read())["health"]["items"] == 1
+    r = json.loads(capture(http, {"kind": "note", "text": "eggs", "device": "phone"},
+                           cookie=jar).read())
+    assert r["status"] == "pending"
+
+
+def test_a_guessed_code_burns_after_five_attempts(http, monkeypatch):
+    monkeypatch.setattr(ui, "LAN_MODE", True)
+    code = ui.new_pair_code()
+    wrong = "999999" if code != "999999" else "888888"
+    for _ in range(5):
+        with pytest.raises(urllib.error.HTTPError):
+            pair(http, wrong)
+    # the real code is now dead too — the laptop must issue a fresh one
+    with pytest.raises(urllib.error.HTTPError) as e:
+        pair(http, code)
+    assert e.value.code == 403
+    assert ui.check_pair_code(ui.new_pair_code()) is True
+
+
+def test_expired_codes_are_refused(http, monkeypatch):
+    monkeypatch.setattr(ui, "LAN_MODE", True)
+    code = ui.new_pair_code()
+    ui._pair["expires"] = 0.0
+    assert ui.check_pair_code(code) is False
+
+
+def test_a_paired_cookie_alone_cannot_write(http, monkeypatch):
+    """A cookie rides along with a cross-site request; a custom header does
+    not. So the cookie may unlock reading, and must never unlock writing."""
+    monkeypatch.setattr(ui, "LAN_MODE", True)
+    jar = pair(http, ui.new_pair_code()).headers["Set-Cookie"].split(";")[0]
+
+    # reading is fine with the cookie alone
+    assert json.loads(get(http, "/api/state", cookie=jar).read())["order"] == []
+
+    # writing is not
+    req = urllib.request.Request(
+        f"{http}/api/capture", data=json.dumps({"kind": "note", "text": "x"}).encode(),
+        headers={"content-type": "application/json", "Cookie": jar})
+    with pytest.raises(urllib.error.HTTPError) as e:
+        _open(req)
+    assert e.value.code == 403
+    assert _fn(server.list_captures)("pending") == []
+
+    # the page's own script, which has the header, still works
+    assert json.loads(capture(http, {"kind": "note", "text": "x"}, cookie=jar).read())[
+        "status"] == "pending"
+
+
+def test_pairing_endpoint_is_absent_on_loopback(http):
+    with pytest.raises(urllib.error.HTTPError) as e:
+        get(http, "/api/pairing")
+    assert e.value.code == 404

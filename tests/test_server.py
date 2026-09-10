@@ -192,32 +192,45 @@ merge_items = _fn(server.merge_items)
 get_health = _fn(server.get_health)
 
 
-def test_v1_database_upgrades_to_v2_preserving_data(tmp_path, monkeypatch):
+def test_v1_database_upgrades_to_latest_preserving_data(tmp_path, monkeypatch):
     """The critical path: a homestock.db written by the shipped v0.1.0 release
-    must survive the events-table rebuild with every row intact."""
+    must survive every later rebuild of the events table with all rows intact.
+
+    Rows are written with raw SQL against the v1 schema on purpose — that is
+    what an old release actually left on disk, and today's code cannot be used
+    to produce it (it expects tables v1 never had)."""
     db = tmp_path / "v1.db"
     monkeypatch.setattr(server, "DB_PATH", db)
     conn = server._connect(db)
     conn.executescript(server.MIGRATIONS[0])
     conn.execute("PRAGMA user_version = 1")
+    conn.execute("INSERT INTO items (name) VALUES ('milk')")
+    conn.executemany(
+        "INSERT INTO events (item_id, type, quantity, unit, price, occurred_at, "
+        "source, source_ref, line_no, voided) VALUES (1,'bought',?,?,?,?,?,?,?,?)",
+        [(2, "l", 1.55, d(12), "email", "order-v1", 0, 1),   # voided
+         (2, "l", 1.55, d(12), "email", "order-v1", 0, 0),   # the correction
+         (1, "l", None, d(5), "manual", "manual:corner:x", 0, 0)],
+    )
     conn.commit()
     conn.close()
 
-    seed_receipt("milk", 5, "order-v1")  # written against the v1 schema
-    void_event("order-v1", line_no=0)
-    seed_receipt("milk", 5, "order-v1")  # void-then-reinsert still works at v1
-
-    server.init_db(db)  # upgrade
+    server.init_db(db)  # upgrade v1 -> latest
 
     conn = server._connect(db)
     assert conn.execute("PRAGMA user_version").fetchone()[0] == len(server.MIGRATIONS)
     cols = [r["name"] for r in conn.execute("PRAGMA table_info(items)")]
     assert "shelf_life_days" in cols and "storage" in cols
+    tables = {r["name"] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+    assert {"aliases", "captures"} <= tables
     conn.close()
+
     ev = get_events("milk")
-    assert len(ev) == 2 and [e["voided"] for e in ev] == [1, 0]
+    assert len(ev) == 3 and [e["voided"] for e in ev] == [1, 0, 0]
+    assert [e["price"] for e in ev][:2] == [1.55, 1.55]  # columns did not shift
     # and the rebuilt table accepts what v1 forbade
     assert correct_stock("milk", 0)["recorded"] == "corrected"
+    assert get_stock("milk")["purchases_observed"] == 2
 
 
 def test_correction_overrides_estimate_and_resets_clock():
@@ -290,7 +303,8 @@ def test_merge_items_folds_history_and_inherits_metadata():
     set_shelf_life("milk", 7, storage="fridge")
 
     r = merge_items("Milk", "semi-skimmed milk")
-    assert r == {"merged": "milk", "into": "semi-skimmed milk", "events_moved": 1}
+    assert r == {"merged": "milk", "into": "semi-skimmed milk",
+                 "events_moved": 1, "alias_learned": "milk"}
     assert [i["name"] for i in get_stock()] == ["semi-skimmed milk"]
 
     s = get_stock("semi-skimmed milk")
@@ -327,3 +341,156 @@ def test_discard_is_recorded_separately_from_correction():
     discard_item("lettuce")
     types = [e["type"] for e in get_events("lettuce")]
     assert types == ["bought", "discarded"]
+
+
+# --- v3: aliases, the capture inbox, cooking ---------------------------------
+
+add_alias = _fn(server.add_alias)
+list_aliases = _fn(server.list_aliases)
+add_capture = _fn(server.add_capture)
+list_captures = _fn(server.list_captures)
+resolve_capture = _fn(server.resolve_capture)
+check_recipe = _fn(server.check_recipe)
+consume_items = _fn(server.consume_items)
+
+
+def test_four_input_paths_converge_on_one_item():
+    """The point of aliases: a barcode, a receipt line and a person all name
+    the same milk, and it stays one repurchase cycle rather than three."""
+    seed_receipt("semi-skimmed milk", 20, "email-1", unit="l", qty=2)
+    add_alias("TESCO SEMI SKMD MILK", "semi-skimmed milk")
+    add_alias("Tesco British Semi Skimmed Milk 2.27L", "semi-skimmed milk")
+    add_alias("milk", "semi-skimmed milk")
+
+    add_items(items=[{"name": "TESCO SEMI SKMD MILK", "quantity": 2, "unit": "l", "line_no": 0}],
+              source="photo", source_ref="photo-1", purchased_at=d(15))
+    add_items(items=[{"name": "Tesco British Semi Skimmed Milk 2.27L", "quantity": 2,
+                      "unit": "l", "line_no": 0}],
+              source="barcode", source_ref="bc-1", purchased_at=d(10))
+    add_items(items=[{"name": "milk", "quantity": 2, "unit": "l", "line_no": 0}],
+              source="loyalty", source_ref="clubcard-1", purchased_at=d(5))
+
+    assert [i["name"] for i in get_stock()] == ["semi-skimmed milk"]
+    s = get_stock("MILK")  # and a lookup by any of those names finds it
+    assert s["purchases_observed"] == 4 and s["median_interval_days"] == 5
+    assert {e["source"] for e in get_events("milk")} == {"email", "photo", "barcode", "loyalty"}
+
+
+def test_merge_learns_an_alias_so_drift_cannot_recur():
+    seed_receipt("milk", 20, "o1", unit="l")
+    seed_receipt("semi-skimmed milk", 10, "o2", unit="l")
+    merge_items("milk", "semi-skimmed milk")
+    assert list_aliases("semi-skimmed milk") == [
+        {"alias": "milk", "item": "semi-skimmed milk", "source": "merge",
+         "created_at": list_aliases()[0]["created_at"]}]
+    # the agent slipping back to the old name no longer creates a duplicate
+    add_items(items=[{"name": "Milk", "quantity": 1, "unit": "l", "line_no": 0}],
+              source="email", source_ref="o3", purchased_at=d(2))
+    assert [i["name"] for i in get_stock()] == ["semi-skimmed milk"]
+
+
+def test_alias_rejects_shadowing_a_real_item():
+    seed_receipt("milk", 5, "o1")
+    seed_receipt("oat milk", 5, "o2")
+    assert "use merge_items" in add_alias("oat milk", "milk")["error"]
+    assert "not an alias of itself" in add_alias("milk", "milk")["error"]
+    assert "unknown item" in add_alias("skimmed", "ghost")["error"]
+
+
+def test_new_sources_are_accepted_and_bad_ones_are_not():
+    for src in ("photo", "barcode", "loyalty", "manual", "email"):
+        r = add_items(items=[{"name": f"thing {src}", "quantity": 1, "unit": "unit", "line_no": 0}],
+                      source=src, source_ref=f"ref-{src}", purchased_at=d(1))
+        assert r["inserted"] == 1, (src, r)
+    r = add_items(items=[{"name": "x", "quantity": 1, "unit": "unit", "line_no": 0}],
+                  source="telepathy", source_ref="t1", purchased_at=d(1))
+    assert "source must be one of" in r["rejected"][0]["reason"]
+
+
+def test_capture_inbox_round_trip():
+    c = add_capture("receipt_photo", path="/tmp/receipt-1.jpg", device="phone", mime="image/jpeg")
+    assert c["status"] == "pending"
+    add_capture("barcode", text="5000119003478", device="phone")
+    add_capture("note", text="2 milk, bread, 6 eggs", device="laptop")
+
+    pending = list_captures()
+    assert [x["kind"] for x in pending] == ["receipt_photo", "barcode", "note"]
+    assert [x["device"] for x in pending] == ["phone", "phone", "laptop"]
+
+    # the agent reads it, records the items, then closes it
+    add_items(items=[{"name": "milk", "quantity": 2, "unit": "l", "line_no": 0}],
+              source="photo", source_ref="capture-1", purchased_at=d(0))
+    assert resolve_capture(c["capture_id"])["status"] == "done"
+    assert [x["id"] for x in list_captures()] != [c["capture_id"]]
+    assert len(list_captures("done")) == 1
+    assert len(list_captures("all")) == 3
+
+
+def test_unreadable_capture_is_skipped_with_a_reason_not_guessed():
+    c = add_capture("receipt_photo", path="/tmp/blurry.jpg", device="phone")
+    r = resolve_capture(c["capture_id"], status="skipped", note="too blurry to read")
+    assert r["status"] == "skipped"
+    assert list_captures("skipped")[0]["note"] == "too blurry to read"
+    assert list_captures() == []  # and it stops cluttering the inbox
+
+
+def test_capture_validation():
+    assert "kind must be one of" in add_capture("telepathy", text="x")["error"]
+    assert "either text or a path" in add_capture("note")["error"]
+    assert "no capture 999" in resolve_capture(999)["error"]
+
+
+def test_check_recipe_sorts_ingredients_by_what_you_have():
+    for i, days in enumerate([31, 26, 21, 16, 11, 6]):
+        seed_receipt("semi-skimmed milk", days, f"m{i}", unit="l", qty=2)  # due to rebuy
+    for i, days in enumerate([30, 20, 10, 1]):
+        seed_receipt("eggs", days, f"e{i}", unit="pack")                   # fresh
+    for i, days in enumerate([40, 30, 20, 8]):
+        seed_receipt("plain flour", days, f"f{i}", unit="kg")              # ~10d cycle, 8d ago
+    seed_receipt("nutmeg", 200, "n1")                                      # one purchase
+
+    r = check_recipe(["eggs", "semi-skimmed milk", "plain flour", "nutmeg", "saffron"])
+    assert r["can_cook"] is False
+    assert [x["ingredient"] for x in r["have"]] == ["eggs"]
+    assert [x["ingredient"] for x in r["low"]] == ["plain flour"]
+    assert [x["ingredient"] for x in r["unsure"]] == ["nutmeg"]
+    assert [x["ingredient"] for x in r["missing"]] == ["semi-skimmed milk", "saffron"]
+    assert r["missing"][1]["reason"] == "never bought"
+
+
+def test_check_recipe_can_cook_and_resolves_aliases():
+    for i, days in enumerate([30, 20, 10, 1]):
+        seed_receipt("eggs", days, f"e{i}", unit="pack")
+    add_alias("free range eggs", "eggs")
+    r = check_recipe(["Free Range Eggs"])
+    assert r["can_cook"] is True and r["have"][0]["item"] == "eggs"
+
+
+def test_cooking_depletes_stock_and_finishing_moves_it_to_the_list():
+    for i, days in enumerate([30, 20, 10, 1]):
+        seed_receipt("eggs", days, f"e{i}", unit="pack")
+        seed_receipt("butter", days, f"b{i}", unit="unit")
+    assert get_stock("eggs")["estimated_state"] == "likely_in_stock"
+
+    r = consume_items([{"name": "eggs", "quantity": 3, "unit": "unit"},
+                       {"name": "butter", "quantity": 1, "finished": True},
+                       {"name": "saffron"}])
+    assert r["consumed"] == 2 and r["marked_finished"] == 1
+    assert r["unknown"][0]["name"] == "saffron"
+
+    assert [e["type"] for e in get_events("eggs")][-1] == "consumed"
+    # using the last of the butter is what actually puts it on the list
+    assert get_stock("butter")["estimated_state"] == "likely_out"
+    assert "butter" in [o["name"] for o in what_should_i_order()]
+    assert get_stock("eggs")["estimated_state"] == "likely_in_stock"  # merely used, not gone
+
+
+def test_consumption_does_not_corrupt_repurchase_intervals():
+    """Intervals model rebuying. Cooking must not look like a purchase."""
+    for i, days in enumerate([30, 20, 10]):
+        seed_receipt("eggs", days, f"e{i}", unit="pack")
+    before = get_stock("eggs")["median_interval_days"]
+    consume_items([{"name": "eggs", "quantity": 2}])
+    after = get_stock("eggs")
+    assert after["median_interval_days"] == before == 10
+    assert after["purchases_observed"] == 3

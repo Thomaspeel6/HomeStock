@@ -172,6 +172,73 @@ distribution. The IMAP app-password rail (already noted in TODOS as the Google
 plan-B) is the fallback and should be built first, because it needs no approval
 from anyone.
 
+## 6a. Four Doors Into The Stock Room
+
+Receipt email is one door and it only ever sees online and delivery orders.
+Buying milk in a corner shop was invisible, so the list confidently asked for
+milk already in the fridge. That is a correctness hole, not a missing feature —
+a list that is confidently wrong stops being read.
+
+| Door | Device | Covers |
+|---|---|---|
+| Receipt email | laptop, scheduled | Online and delivery orders |
+| Photograph a paper receipt | phone | In-store shopping — the blind spot |
+| Barcode | phone | One-offs, and correcting by hand |
+| Typed note | either | Always available, works offline |
+| Loyalty export (Clubcard/Nectar) | laptop, one-off | Years of backfill in one import *(not built)* |
+
+**Everything lands in an inbox, not in stock.** `add_capture` queues it;
+`list_captures` / `resolve_capture` let an agent read it, record the items, and
+close it. The split matters: capturing has to be instant, offline and
+one-handed in a shop, while reading needs a model. Keeping them apart is what
+lets a phone contribute to a database it cannot reason about, and what makes
+"skip it and say why" the honest answer to a blurry photo instead of a guess.
+
+**Four doors means four vocabularies**, and left alone that is four items with
+four wrong repurchase cycles. The `aliases` table is where the model's
+canonicalisation persists; `merge_items` records one automatically, so drift
+heals rather than recurs. Canonicalisation quality remains outsourced to the
+model — this only stops the same string being resolved twice.
+
+## 6b. Phone Capture, And What It Costs
+
+The phone is the camera; the laptop is the brain. `homestock-ui --lan` binds
+the local network and prints a six-digit pairing code.
+
+This is the one place where a mistake exposes a household, so it is the one
+place with a real threat model:
+
+- **Off by default.** Binding 0.0.0.0 on a cafe network hands a stranger a
+  shopping history — which reveals health, religion and household composition.
+- **Nothing is readable before pairing**, reads included. An unpaired device
+  gets a pairing prompt and no data.
+- **Codes expire in ten minutes, and five wrong guesses burn the code** rather
+  than merely slowing a guesser down.
+- **The cookie proves which device; the header proves which page.** A cookie
+  rides along with a cross-site request, so reads may accept it and writes
+  never do.
+
+Accepted limitation: LAN mode is plain HTTP, so the pairing cookie cannot be
+`Secure` and traffic is readable by anyone already on the wifi with the ability
+to sniff it. Fixing that properly needs a self-signed certificate and a trust
+prompt, which is worse onboarding for a threat most home networks do not face.
+Revisit if HomeStock is ever used on shared or workplace networks.
+
+## 6c. Cooking
+
+Cooking is the largest real depletion event in a kitchen and nothing modelled
+it — stock only ever drained by inference from repurchase.
+
+- `check_recipe(ingredients)` sorts a recipe's ingredients into have / low /
+  missing / unsure.
+- `consume_items(items)` records the cooking; `finished: true` also writes a
+  correction to zero, which is what actually moves something onto the list.
+
+The model turns a recipe — pasted text, a URL, a photo of a cookbook page —
+into an ingredient list. The server only does set maths against stock, because
+that is the part that has to be exactly right. Consumption deliberately does
+not disturb repurchase intervals: cooking is not rebuying.
+
 ## 7. What v3 Ships
 
 **In:**
@@ -180,12 +247,22 @@ from anyone.
 - Perishables: `set_shelf_life`, `get_expiring_soon` *(built)*
 - Confidence from interval variance, surfaced in the UI *(built)*
 - `merge_items` for name drift, `get_health` for diagnostics *(built)*
+- Four input doors: email, paper-receipt photo, barcode, typed note *(built)*
+- The capture inbox, and phone capture over paired LAN *(built)*
+- Aliases, so the doors converge on one item *(built)*
+- Cooking: `check_recipe`, `consume_items` *(built)*
+- Loyalty-export import (Clubcard/Nectar) — the fastest route from empty to
+  useful, and nobody else is doing it
 - Built-in ingestion (IMAP first, Gmail OAuth second)
 - `.app` bundle, notarised, with `launchd` scheduling and MCP auto-registration
 - The first-run reveal, in code
 - PyPI release so the developer path is `uvx`, not `git clone`
 
 **Out:**
+- A product database behind barcodes. Open Food Facts is the obvious source and
+  can be cached locally, but a barcode currently arrives as digits for the model
+  to name, which is enough to be useful and adds no dependency.
+- HTTPS on the LAN, for the reasons in §6b
 - Windows (TODOS P3)
 - Multi-home sync and shared households (TODOS P2) — still the most expensive
   item on the roadmap and still in tension with the zero-infrastructure

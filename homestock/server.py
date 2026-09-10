@@ -31,7 +31,10 @@ from mcp.server.fastmcp import FastMCP
 DB_PATH = Path(os.environ.get("HOMESTOCK_DB", Path.cwd() / "homestock.db"))
 
 VALID_UNITS = ("unit", "g", "kg", "ml", "l", "pack")
-VALID_SOURCES = ("email", "manual")
+# Doors into the stock room. 'user' and 'recipe' are written by the tools
+# below rather than by add_items, so they are not offered here.
+VALID_SOURCES = ("email", "manual", "photo", "barcode", "loyalty")
+VALID_CAPTURE_KINDS = ("receipt_photo", "barcode", "note")
 VALID_STORAGE = ("pantry", "fridge", "freezer")
 # How stale an ingestion heartbeat may get before get_health() calls it stale.
 STALE_INGEST_DAYS = 10
@@ -123,10 +126,87 @@ ALTER TABLE items ADD COLUMN shelf_life_days INTEGER;
 ALTER TABLE items ADD COLUMN storage TEXT;
 """
 
+# v3 — many doors into the stock room.
+#
+# Receipt emails only ever saw online and delivery orders. Buying milk in a
+# corner shop was invisible, so the shopping list confidently asked for milk
+# already in the fridge — and a list that is confidently wrong stops being
+# read. v3 adds paper receipts, barcodes, loyalty exports and typed notes.
+#
+# Two tables carry the weight:
+#
+#   aliases  — every door names things differently. A barcode says "Tesco
+#              British Semi Skimmed Milk 2.27L", a receipt line says "TESCO
+#              SEMI SKMD MILK", a person says "milk". Left alone those become
+#              three items with three wrong repurchase cycles. Canonicalisation
+#              is still the model's job; this is where its answers persist, so
+#              the same raw string never has to be resolved twice.
+#
+#   captures — the inbox. A photo or barcode from any device lands here
+#              unread, and an agent turns it into items later. Keeps the
+#              capture path (which must be instant, offline and phone-shaped)
+#              separate from the reading path (which needs a model).
+#              Photos are files on disk, not blobs: the DB stays small and
+#              copyable, and an agent can just read the path.
+_SCHEMA_V3 = """
+CREATE TABLE events_v3 (
+  id          INTEGER PRIMARY KEY,
+  item_id     INTEGER NOT NULL REFERENCES items(id),
+  type        TEXT    NOT NULL CHECK (type IN ('bought','consumed','discarded','corrected')),
+  quantity    REAL    NOT NULL CHECK (quantity >= 0),
+  unit        TEXT    NOT NULL CHECK (unit IN ('unit','g','kg','ml','l','pack')),
+  price       REAL    CHECK (price IS NULL OR price >= 0),
+  location    TEXT,
+  occurred_at TEXT    NOT NULL CHECK (occurred_at >= '2015-01-01'),
+  source      TEXT    NOT NULL CHECK (source IN
+                ('email','manual','user','photo','barcode','loyalty','recipe')),
+  source_ref  TEXT    NOT NULL,
+  line_no     INTEGER NOT NULL DEFAULT 0,
+  voided      INTEGER NOT NULL DEFAULT 0,
+  recorded_at TEXT    NOT NULL DEFAULT (datetime('now'))
+);
+
+INSERT INTO events_v3 (id, item_id, type, quantity, unit, price, location,
+                       occurred_at, source, source_ref, line_no, voided, recorded_at)
+  SELECT id, item_id, type, quantity, unit, price, location,
+         occurred_at, source, source_ref, line_no, voided, recorded_at
+  FROM events;
+
+DROP TABLE events;
+ALTER TABLE events_v3 RENAME TO events;
+
+CREATE UNIQUE INDEX idx_events_dedup ON events (source_ref, line_no)
+  WHERE voided = 0 AND type = 'bought';
+CREATE INDEX idx_events_item ON events (item_id, occurred_at);
+
+CREATE TABLE aliases (
+  alias      TEXT PRIMARY KEY,
+  item_id    INTEGER NOT NULL REFERENCES items(id) ON DELETE CASCADE,
+  source     TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX idx_aliases_item ON aliases (item_id);
+
+CREATE TABLE captures (
+  id          INTEGER PRIMARY KEY,
+  kind        TEXT NOT NULL CHECK (kind IN ('receipt_photo','barcode','note')),
+  path        TEXT,
+  text        TEXT,
+  mime        TEXT,
+  device      TEXT,
+  status      TEXT NOT NULL DEFAULT 'pending'
+              CHECK (status IN ('pending','done','skipped')),
+  note        TEXT,
+  created_at  TEXT NOT NULL DEFAULT (datetime('now')),
+  resolved_at TEXT
+);
+CREATE INDEX idx_captures_status ON captures (status, created_at);
+"""
+
 # Append-only. MIGRATIONS[n] moves user_version n -> n+1. Never edit a shipped
 # migration: third parties hold homestock.db files, so this list is a public
 # contract (CEO plan D24/D27).
-MIGRATIONS: list[str] = [_SCHEMA_V1, _SCHEMA_V2]
+MIGRATIONS: list[str] = [_SCHEMA_V1, _SCHEMA_V2, _SCHEMA_V3]
 
 
 def _connect(path: Path | str) -> sqlite3.Connection:
@@ -172,6 +252,22 @@ def _validate_occurred_at(value: str) -> str | None:
 
 def _canonical_name(name: str) -> str:
     return " ".join(name.strip().lower().split())
+
+
+def _resolve(conn: sqlite3.Connection, raw: str) -> str:
+    """Canonicalise a raw name, then follow any learned alias to the real item.
+
+    Four input paths mean four vocabularies for the same milk. Resolution
+    happens on the way in, so an alias learned once (from a merge, or taught
+    by the agent) never has to be applied again downstream."""
+    name = _canonical_name(raw)
+    row = conn.execute("SELECT i.name FROM aliases a JOIN items i ON i.id = a.item_id "
+                       "WHERE a.alias = ?", (name,)).fetchone()
+    return row["name"] if row else name
+
+
+def _captures_dir() -> Path:
+    return Path(DB_PATH).parent / "captures"
 
 
 def _interval_confidence(intervals: list[int]) -> tuple[float | None, str]:
@@ -314,7 +410,7 @@ def add_items(
     with get_db() as conn:
         for it in items:
             line_no = it.get("line_no", 0)
-            name = _canonical_name(str(it.get("name", "")))
+            name = _resolve(conn, str(it.get("name", "")))
             qty = it.get("quantity")
             unit = it.get("unit")
             price = it.get("price")
@@ -361,7 +457,7 @@ def get_stock(item: str | None = None) -> dict | list[dict]:
                 {"name": r["name"], "category": r["category"]}
                 for r in conn.execute("SELECT name, category FROM items ORDER BY name")
             ]
-        stats = _item_stats(conn, _canonical_name(item))
+        stats = _item_stats(conn, _resolve(conn, item))
         return stats if stats else {"error": f"unknown item {item!r} — get_stock() lists known names"}
 
 
@@ -445,7 +541,8 @@ def get_events(item: str | None = None, since: str | None = None) -> list[dict]:
     args: list = []
     if item is not None:
         q += " AND i.name = ?"
-        args.append(_canonical_name(item))
+        with get_db() as c:
+            args.append(_resolve(c, item))
     if since is not None:
         q += " AND e.occurred_at >= ?"
         args.append(since)
@@ -466,10 +563,10 @@ def _lookup(conn: sqlite3.Connection, name: str) -> sqlite3.Row | None:
 
 def _record_user_event(kind: str, item: str, quantity: float, unit: str | None) -> dict:
     """Shared path for the events the user asserts rather than a receipt."""
-    name = _canonical_name(item)
     if not isinstance(quantity, (int, float)) or quantity < 0:
         return {"error": f"quantity must be a number >= 0, got {quantity!r}"}
     with get_db() as conn:
+        name = _resolve(conn, item)
         row = _lookup(conn, name)
         if row is None:
             return {"error": f"unknown item {item!r} — get_stock() lists known names"}
@@ -518,12 +615,12 @@ def set_shelf_life(item: str, days: int, storage: str | None = None) -> dict:
     rots. The agent supplies a sensible default on first purchase (fresh
     chicken ~3 days, milk ~7); the user overrides it. storage is one of
     pantry/fridge/freezer and is advisory — it explains the number."""
-    name = _canonical_name(item)
     if not isinstance(days, int) or days <= 0:
         return {"error": f"days must be a positive integer, got {days!r}"}
     if storage is not None and storage not in VALID_STORAGE:
         return {"error": f"storage must be one of {VALID_STORAGE}, got {storage!r}"}
     with get_db() as conn:
+        name = _resolve(conn, item)
         row = _lookup(conn, name)
         if row is None:
             return {"error": f"unknown item {item!r} — get_stock() lists known names"}
@@ -579,6 +676,7 @@ def merge_items(from_item: str, into_item: str) -> dict:
     if src == dst:
         return {"error": "from_item and into_item are the same name"}
     with get_db() as conn:
+        dst = _resolve(conn, dst)
         a, b = _lookup(conn, src), _lookup(conn, dst)
         if a is None:
             return {"error": f"unknown item {from_item!r}"}
@@ -587,6 +685,11 @@ def merge_items(from_item: str, into_item: str) -> dict:
         moved = conn.execute(
             "UPDATE events SET item_id = ? WHERE item_id = ?", (b["id"], a["id"])
         ).rowcount
+        # Repoint before the delete, or ON DELETE CASCADE takes them with it.
+        conn.execute("UPDATE aliases SET item_id = ? WHERE item_id = ?", (b["id"], a["id"]))
+        # The losing name becomes an alias: the drift heals itself next time.
+        conn.execute("INSERT OR IGNORE INTO aliases (alias, item_id, source) VALUES (?, ?, 'merge')",
+                     (src, b["id"]))
         # The survivor inherits anything it was missing rather than losing it.
         conn.execute(
             "UPDATE items SET category = COALESCE(category, ?), "
@@ -595,7 +698,7 @@ def merge_items(from_item: str, into_item: str) -> dict:
             (a["category"], a["shelf_life_days"], a["storage"], b["id"]),
         )
         conn.execute("DELETE FROM items WHERE id = ?", (a["id"],))
-    return {"merged": src, "into": dst, "events_moved": moved}
+    return {"merged": src, "into": dst, "events_moved": moved, "alias_learned": src}
 
 
 @mcp.tool()
@@ -641,6 +744,163 @@ def get_health() -> dict:
         "stale": days_since_ingest is None or days_since_ingest > STALE_INGEST_DAYS,
         "stale_after_days": STALE_INGEST_DAYS,
     }
+
+
+@mcp.tool()
+def add_alias(alias: str, item: str) -> dict:
+    """Teach HomeStock that a raw string means an item it already knows.
+
+    Four input paths produce four vocabularies for one thing: a barcode gives
+    "tesco british semi skimmed milk 2.27l", a receipt line gives "tesco semi
+    skmd milk", a person types "milk". Without this they become three items
+    with three wrong repurchase cycles. Resolve a name once and record it here
+    rather than resolving it on every ingest."""
+    a = _canonical_name(alias)
+    if not a:
+        return {"error": "alias is required"}
+    with get_db() as conn:
+        target = _resolve(conn, item)
+        row = _lookup(conn, target)
+        if row is None:
+            return {"error": f"unknown item {item!r} — get_stock() lists known names"}
+        if a == target:
+            return {"error": "an item is not an alias of itself"}
+        # An alias that shadows a real item would silently hide its history.
+        if _lookup(conn, a) is not None:
+            return {"error": f"{a!r} is itself an item — use merge_items to fold them together"}
+        conn.execute("INSERT INTO aliases (alias, item_id, source) VALUES (?, ?, 'agent') "
+                     "ON CONFLICT(alias) DO UPDATE SET item_id = excluded.item_id",
+                     (a, row["id"]))
+    return {"alias": a, "resolves_to": target}
+
+
+@mcp.tool()
+def list_aliases(item: str | None = None) -> list[dict]:
+    """Every learned name mapping, or just one item's. Useful for spotting
+    canonicalisation going wrong before it poisons the estimates."""
+    q = ("SELECT a.alias, i.name AS item, a.source, a.created_at FROM aliases a "
+         "JOIN items i ON i.id = a.item_id")
+    args: list = []
+    with get_db() as conn:
+        if item is not None:
+            q += " WHERE i.name = ?"
+            args.append(_resolve(conn, item))
+        return [dict(r) for r in conn.execute(q + " ORDER BY a.alias", args)]
+
+
+@mcp.tool()
+def add_capture(kind: str, text: str | None = None, path: str | None = None,
+                device: str | None = None, mime: str | None = None) -> dict:
+    """Put something in the inbox to be read later: a photographed paper
+    receipt, a scanned barcode, or a typed note ("2 milk, bread, 6 eggs").
+
+    Capture and reading are deliberately separate. Capturing must work
+    instantly, offline, one-handed, in a shop — reading needs a model. This is
+    how a phone can contribute to a database it cannot reason about.
+
+    Photos are stored as files (see path); the row records where. Nothing here
+    is stock yet: an agent calls list_captures(), reads it, calls add_items(),
+    then resolve_capture()."""
+    if kind not in VALID_CAPTURE_KINDS:
+        return {"error": f"kind must be one of {VALID_CAPTURE_KINDS}, got {kind!r}"}
+    if not text and not path:
+        return {"error": "a capture needs either text or a path"}
+    with get_db() as conn:
+        cur = conn.execute(
+            "INSERT INTO captures (kind, text, path, device, mime) VALUES (?, ?, ?, ?, ?)",
+            (kind, text, path, device, mime),
+        )
+    return {"capture_id": cur.lastrowid, "kind": kind, "status": "pending"}
+
+
+@mcp.tool()
+def list_captures(status: str = "pending") -> list[dict]:
+    """The inbox: things captured from any device and not yet turned into
+    items. Read each one, call add_items() with what it contains, then
+    resolve_capture(). Pass status='done' or 'skipped' to review history."""
+    if status not in ("pending", "done", "skipped", "all"):
+        return []
+    q = ("SELECT id, kind, text, path, mime, device, status, note, created_at, resolved_at "
+         "FROM captures")
+    args: list = []
+    if status != "all":
+        q += " WHERE status = ?"
+        args.append(status)
+    with get_db() as conn:
+        return [dict(r) for r in conn.execute(q + " ORDER BY created_at, id", args)]
+
+
+@mcp.tool()
+def resolve_capture(capture_id: int, status: str = "done", note: str | None = None) -> dict:
+    """Close a capture once its contents are recorded — or mark it 'skipped'
+    with a note when it cannot be read. Never guess at a blurry receipt; an
+    unreadable capture that is honestly skipped is recoverable, a fabricated
+    one is not."""
+    if status not in ("done", "skipped", "pending"):
+        return {"error": "status must be done, skipped or pending"}
+    with get_db() as conn:
+        cur = conn.execute(
+            "UPDATE captures SET status = ?, note = COALESCE(?, note), "
+            "resolved_at = CASE WHEN ? = 'pending' THEN NULL ELSE ? END WHERE id = ?",
+            (status, note, status, _now_iso(), capture_id),
+        )
+    if not cur.rowcount:
+        return {"error": f"no capture {capture_id}"}
+    return {"capture_id": capture_id, "status": status}
+
+
+@mcp.tool()
+def check_recipe(ingredients: list[str]) -> dict:
+    """Can I cook this? Sorts a recipe's ingredients into what you have, what
+    is running low, and what you would need to buy.
+
+    The model turns a recipe — pasted text, a URL, a photo of a cookbook —
+    into this list of ingredient names. The server only does the set maths
+    against stock, because that is the part that must be exactly right."""
+    have, low, missing, unknown = [], [], [], []
+    with get_db() as conn:
+        for raw in ingredients:
+            name = _resolve(conn, str(raw))
+            s = _item_stats(conn, name)
+            if s is None:
+                missing.append({"ingredient": raw, "reason": "never bought"})
+            elif s["estimated_state"] == "likely_out":
+                missing.append({"ingredient": raw, "item": name,
+                                "reason": "you said you were out" if s["confirmed"]
+                                          else "past its usual cycle"})
+            elif s["estimated_state"] == "likely_low":
+                low.append({"ingredient": raw, "item": name})
+            elif s["estimated_state"] == "unknown":
+                unknown.append({"ingredient": raw, "item": name})
+            else:
+                have.append({"ingredient": raw, "item": name})
+    return {"can_cook": not missing, "have": have, "low": low,
+            "missing": missing, "unsure": unknown}
+
+
+@mcp.tool()
+def consume_items(items: list[dict]) -> dict:
+    """Record cooking. Each item: {name, quantity?, unit?, finished?}.
+
+    Cooking is the largest real depletion event in a kitchen and nothing else
+    models it — without this, stock only ever drains by inference. Set
+    `finished: true` for anything you used the last of; that also records a
+    correction to zero, which is what actually moves it onto the shopping
+    list. Unknown items are reported, not invented."""
+    consumed, finished, unknown = 0, 0, []
+    for it in items:
+        name = str(it.get("name", ""))
+        qty = it.get("quantity", 1)
+        r = _record_user_event("consumed", name, qty if isinstance(qty, (int, float)) else 1,
+                               it.get("unit"))
+        if "error" in r:
+            unknown.append({"name": name, "reason": r["error"]})
+            continue
+        consumed += 1
+        if it.get("finished"):
+            _record_user_event("corrected", name, 0, it.get("unit"))
+            finished += 1
+    return {"consumed": consumed, "marked_finished": finished, "unknown": unknown}
 
 
 def main() -> None:
