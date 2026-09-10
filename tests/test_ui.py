@@ -84,6 +84,14 @@ def test_state_sorts_items_into_exactly_one_list():
     assert len(everywhere) == len(set(everywhere))
 
 
+def test_binning_removes_it_from_use_soon(http):
+    buy("lettuce", 1, "l1")
+    set_shelf_life("lettuce", 3)
+    assert [x["name"] for x in ui.build_state()["expiring"]] == ["lettuce"]
+    post(http, {"item": "lettuce", "action": "binned"})
+    assert ui.build_state()["expiring"] == []
+
+
 def test_long_expired_items_stop_nagging():
     buy("whole chicken", 13, "c1", unit="kg", qty=1.4)
     set_shelf_life("whole chicken", 3)
@@ -111,7 +119,10 @@ def test_actions_write_the_right_event(http):
     assert ui.get_stock("milk")["corrected_quantity"] == 1
 
     post(http, {"item": "lettuce", "action": "binned"})
-    assert [e["type"] for e in get_events("lettuce")] == ["bought", "discarded"]
+    # binning records the waste AND that there is none left, so the row leaves
+    # "Use soon" instead of nagging about food already in the bin
+    assert [e["type"] for e in get_events("lettuce")] == ["bought", "discarded", "corrected"]
+    assert ui.get_stock("lettuce")["corrected_quantity"] == 0
 
 
 def test_bad_requests_are_rejected_cleanly(http):

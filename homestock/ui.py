@@ -556,7 +556,13 @@ class Handler(BaseHTTPRequestHandler):
             elif action == "out":
                 result = correct_stock(item, 0)
             elif action == "binned":
+                # Binning something means it is gone, not merely wasted. Record
+                # the waste (the signal that a shelf-life estimate was too
+                # generous) and the fact that there is none left, or the row
+                # sits in "Use soon" nagging about food already in the bin.
                 result = discard_item(item)
+                if "error" not in result:
+                    correct_stock(item, 0)
             else:
                 return self._json(400, {"error": f"unknown action {action!r}"})
             return self._json(400 if "error" in result else 200, result)
