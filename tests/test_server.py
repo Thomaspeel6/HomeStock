@@ -1,5 +1,6 @@
 """HomeStock server tests. Run: uv run pytest"""
 
+import json
 import subprocess
 import sys
 from datetime import date, timedelta
@@ -146,7 +147,7 @@ def test_migration_upgrades_old_db_preserving_data(fresh_db, monkeypatch):
                         server.MIGRATIONS + ["ALTER TABLE items ADD COLUMN emoji TEXT;"])
     server.init_db(fresh_db)
     conn = server._connect(fresh_db)
-    assert conn.execute("PRAGMA user_version").fetchone()[0] == 2
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == len(server.MIGRATIONS)
     cols = [r["name"] for r in conn.execute("PRAGMA table_info(items)")]
     assert "emoji" in cols
     conn.close()
@@ -179,3 +180,150 @@ conn.close()
     n = conn.execute("SELECT COUNT(*) FROM items").fetchone()[0]
     conn.close()
     assert n == 100
+
+
+# --- v2: ground truth, shelf life, merge, health ----------------------------
+
+correct_stock = _fn(server.correct_stock)
+discard_item = _fn(server.discard_item)
+set_shelf_life = _fn(server.set_shelf_life)
+get_expiring_soon = _fn(server.get_expiring_soon)
+merge_items = _fn(server.merge_items)
+get_health = _fn(server.get_health)
+
+
+def test_v1_database_upgrades_to_v2_preserving_data(tmp_path, monkeypatch):
+    """The critical path: a homestock.db written by the shipped v0.1.0 release
+    must survive the events-table rebuild with every row intact."""
+    db = tmp_path / "v1.db"
+    monkeypatch.setattr(server, "DB_PATH", db)
+    conn = server._connect(db)
+    conn.executescript(server.MIGRATIONS[0])
+    conn.execute("PRAGMA user_version = 1")
+    conn.commit()
+    conn.close()
+
+    seed_receipt("milk", 5, "order-v1")  # written against the v1 schema
+    void_event("order-v1", line_no=0)
+    seed_receipt("milk", 5, "order-v1")  # void-then-reinsert still works at v1
+
+    server.init_db(db)  # upgrade
+
+    conn = server._connect(db)
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == len(server.MIGRATIONS)
+    cols = [r["name"] for r in conn.execute("PRAGMA table_info(items)")]
+    assert "shelf_life_days" in cols and "storage" in cols
+    conn.close()
+    ev = get_events("milk")
+    assert len(ev) == 2 and [e["voided"] for e in ev] == [1, 0]
+    # and the rebuilt table accepts what v1 forbade
+    assert correct_stock("milk", 0)["recorded"] == "corrected"
+
+
+def test_correction_overrides_estimate_and_resets_clock():
+    for i, days_ago in enumerate([31, 26, 21, 16, 11, 6]):  # milk every 5d, last 6d ago
+        seed_receipt("milk", days_ago, f"order-m{i}", unit="l", qty=2)
+    assert get_stock("milk")["estimated_state"] == "likely_out"
+
+    correct_stock("milk", 2, unit="l")  # "we still have two litres"
+    s = get_stock("milk")
+    assert s["confirmed"] is True
+    assert s["days_since_observation"] == 0
+    assert s["estimated_state"] == "likely_in_stock"
+    assert s["days_since_last_purchase"] == 6  # the receipt fact is unchanged
+
+
+def test_confirmed_out_reaches_the_order_list_on_one_purchase():
+    seed_receipt("paprika", 40, "order-p1")
+    assert get_stock("paprika")["estimated_state"] == "unknown"  # too thin to infer
+    correct_stock("paprika", 0)
+    s = get_stock("paprika")
+    assert s["estimated_state"] == "likely_out" and s["confidence"] == "high"
+    order = what_should_i_order()
+    assert [o["name"] for o in order] == ["paprika"]
+    assert order[0]["reason"] == "you said you were out"
+
+
+def test_correction_requires_known_item_and_valid_quantity():
+    assert "unknown item" in correct_stock("unicorn steak", 1)["error"]
+    seed_receipt("rice", 10, "order-r1", unit="kg")
+    assert "quantity must be" in correct_stock("rice", -2)["error"]
+
+
+def test_confidence_tracks_regularity():
+    for i, d_ago in enumerate([35, 28, 21, 14, 7]):  # metronomic
+        seed_receipt("bread", d_ago, f"order-b{i}")
+    for i, d_ago in enumerate([60, 59, 30, 3]):  # erratic
+        seed_receipt("wine", d_ago, f"order-w{i}")
+    assert get_stock("bread")["confidence"] == "high"
+    assert get_stock("wine")["confidence"] == "low"
+    assert get_stock("bread")["interval_variation"] == 0.0
+
+
+def test_shelf_life_and_expiring_soon():
+    seed_receipt("whole chicken", 2, "order-c1", unit="kg", qty=1.4)
+    seed_receipt("tinned beans", 2, "order-t1", unit="pack")
+    assert get_expiring_soon() == []  # nothing has a shelf life yet
+
+    assert set_shelf_life("whole chicken", 3, storage="fridge")["shelf_life_days"] == 3
+    assert set_shelf_life("tinned beans", 900)["shelf_life_days"] == 900
+
+    soon = get_expiring_soon(within_days=3)
+    assert [x["name"] for x in soon] == ["whole chicken"]
+    assert soon[0]["days_left"] == 1 and soon[0]["storage"] == "fridge"
+
+    correct_stock("whole chicken", 0)  # eaten — it can no longer spoil
+    assert get_expiring_soon(within_days=3) == []
+
+
+def test_set_shelf_life_validation():
+    seed_receipt("milk", 1, "order-1")
+    assert "positive integer" in set_shelf_life("milk", 0)["error"]
+    assert "storage must be" in set_shelf_life("milk", 7, storage="cupboard")["error"]
+    assert "unknown item" in set_shelf_life("ghost", 7)["error"]
+
+
+def test_merge_items_folds_history_and_inherits_metadata():
+    seed_receipt("milk", 20, "order-1", unit="l", qty=2)
+    seed_receipt("semi-skimmed milk", 15, "order-2", unit="l", qty=2)
+    seed_receipt("semi-skimmed milk", 10, "order-3", unit="l", qty=2)
+    set_shelf_life("milk", 7, storage="fridge")
+
+    r = merge_items("Milk", "semi-skimmed milk")
+    assert r == {"merged": "milk", "into": "semi-skimmed milk", "events_moved": 1}
+    assert [i["name"] for i in get_stock()] == ["semi-skimmed milk"]
+
+    s = get_stock("semi-skimmed milk")
+    assert s["purchases_observed"] == 3          # history folded in, none lost
+    assert s["median_interval_days"] == 5
+    assert s["shelf_life_days"] == 7             # survivor inherited what it lacked
+    assert s["storage"] == "fridge"
+
+
+def test_merge_items_rejects_bad_targets():
+    seed_receipt("milk", 5, "order-1")
+    assert "same name" in merge_items("milk", "MILK")["error"]
+    assert "unknown item" in merge_items("nope", "milk")["error"]
+    assert "merge into a name that exists" in merge_items("milk", "nope")["error"]
+
+
+def test_health_flags_stale_ingestion():
+    h = get_health()
+    assert h["stale"] is True and h["days_since_ingest"] is None  # never ingested
+    assert h["schema_version"] == len(server.MIGRATIONS)
+
+    seed_receipt("milk", 5, "order-1")
+    record_ingest_run(window_start=d(7), window_end=d(0), emails_seen=3, events_written=1)
+    h = get_health()
+    assert h["stale"] is False
+    assert (h["items"], h["events"], h["ingest_runs"]) == (1, 1, 1)
+    assert h["latest_event"] == d(5)
+    # diagnostics must be safe to paste into a bug report
+    assert "milk" not in json.dumps(h)
+
+
+def test_discard_is_recorded_separately_from_correction():
+    seed_receipt("lettuce", 4, "order-1")
+    discard_item("lettuce")
+    types = [e["type"] for e in get_events("lettuce")]
+    assert types == ["bought", "discarded"]

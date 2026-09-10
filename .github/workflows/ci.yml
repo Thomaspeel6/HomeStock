@@ -30,7 +30,8 @@ jobs:
               m=json.loads(line)
               if m.get('id')==2:
                   tools=sorted(t['name'] for t in m['result']['tools'])
-          expected=['add_items','get_events','get_stock','record_ingest_run','void_event','what_should_i_order']
+          expected=['add_items','correct_stock','discard_item','get_events','get_expiring_soon','get_health',
+                    'get_stock','merge_items','record_ingest_run','set_shelf_life','void_event','what_should_i_order']
           assert tools==expected, tools
           print('MCP handshake OK:', tools)
           "
