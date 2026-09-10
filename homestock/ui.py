@@ -44,7 +44,12 @@ MAX_UPLOAD = 12 * 1024 * 1024
 
 _pair = {"code": None, "expires": 0.0, "attempts": 0}
 
-_fn = lambda t: t.fn if hasattr(t, "fn") else t  # noqa: E731
+
+def _fn(tool):
+    """FastMCP wraps each tool; the plain function is under .fn."""
+    return tool.fn if hasattr(tool, "fn") else tool
+
+
 get_stock = _fn(server.get_stock)
 what_should_i_order = _fn(server.what_should_i_order)
 get_expiring_soon = _fn(server.get_expiring_soon)
@@ -607,7 +612,7 @@ class Handler(BaseHTTPRequestHandler):
 
     # --- routes -----------------------------------------------------------
 
-    def do_GET(self) -> None:  # noqa: N802
+    def do_GET(self) -> None:
         path = self.path.split("?")[0]
         if not self._paired():
             return self._page(PAIR_PAGE) if path in ("/", "/capture") else self._json(403, {"error": "pair first"})
@@ -629,7 +634,7 @@ class Handler(BaseHTTPRequestHandler):
         else:
             self._json(404, {"error": "not found"})
 
-    def do_POST(self) -> None:  # noqa: N802
+    def do_POST(self) -> None:
         path = self.path.split("?")[0]
 
         if path == "/api/pair":
@@ -707,7 +712,9 @@ def main(port: int = 7777, open_browser: bool = True, lan: bool | None = None) -
     LAN_MODE = lan
 
     server.init_db()
-    host = "0.0.0.0" if LAN_MODE else "127.0.0.1"  # noqa: S104 — opt-in, see module docstring
+    # Binding every interface is the point of LAN mode, and the reason it is
+    # opt-in: see this module's docstring for what guards it.
+    host = "0.0.0.0" if LAN_MODE else "127.0.0.1"
     httpd = ThreadingHTTPServer((host, port), Handler)
     print(f"HomeStock is at http://127.0.0.1:{port}/")
     print(f"Database: {Path(server.DB_PATH)}")

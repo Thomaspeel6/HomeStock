@@ -1,0 +1,53 @@
+name: Bug report
+description: Something behaves wrongly.
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        **Do not paste your kitchen.** Run `get_health()` (or open the pantry
+        window's footer) — it reports counts and dates only, never item names
+        or email content, so it is safe to include.
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened, and what you expected instead
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. uv run homestock-ui
+        2. Click "Out of it" on ...
+        3. ...
+    validations:
+      required: true
+  - type: dropdown
+    id: surface
+    attributes:
+      label: Where
+      multiple: true
+      options:
+        - The pantry window (homestock-ui)
+        - Phone capture / pairing (--lan)
+        - The MCP server, via an agent
+        - Ingestion
+        - Installing or starting it
+    validations:
+      required: true
+  - type: textarea
+    id: health
+    attributes:
+      label: get_health() output
+      render: json
+    validations:
+      required: false
+  - type: input
+    id: env
+    attributes:
+      label: OS, Python version, and how you installed it
+      placeholder: macOS 15.3, Python 3.12, uv run from a git clone
+    validations:
+      required: true

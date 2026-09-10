@@ -144,7 +144,7 @@ def test_migration_upgrades_old_db_preserving_data(fresh_db, monkeypatch):
     seed_receipt("milk", 5, "order-1")
     # simulate a future release adding a migration
     monkeypatch.setattr(server, "MIGRATIONS",
-                        server.MIGRATIONS + ["ALTER TABLE items ADD COLUMN emoji TEXT;"])
+                        [*server.MIGRATIONS, "ALTER TABLE items ADD COLUMN emoji TEXT;"])
     server.init_db(fresh_db)
     conn = server._connect(fresh_db)
     assert conn.execute("PRAGMA user_version").fetchone()[0] == len(server.MIGRATIONS)

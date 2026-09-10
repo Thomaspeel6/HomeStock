@@ -5,14 +5,14 @@ import threading
 import urllib.error
 import urllib.request
 from datetime import date, timedelta
-from pathlib import Path
 from http.server import ThreadingHTTPServer
+from pathlib import Path
 
 import pytest
 
 from homestock import server, ui
 
-_fn = lambda t: t.fn if hasattr(t, "fn") else t  # noqa: E731
+_fn = lambda t: t.fn if hasattr(t, "fn") else t
 add_items = _fn(server.add_items)
 set_shelf_life = _fn(server.set_shelf_life)
 correct_stock = _fn(server.correct_stock)
@@ -75,7 +75,7 @@ def test_state_sorts_items_into_exactly_one_list():
     set_shelf_life("semi-skimmed milk", 7)
 
     s = ui.build_state()
-    names = lambda k: [x["name"] for x in s[k]]  # noqa: E731
+    names = lambda k: [x["name"] for x in s[k]]
     assert names("order") == ["semi-skimmed milk"]
     assert names("expiring") == ["whole chicken"]
     assert names("shelf") == ["bananas"]

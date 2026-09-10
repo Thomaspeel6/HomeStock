@@ -16,7 +16,7 @@ OCR pipelines and per-retailer parsers. Do not build from it.
 ## Status
 
 Alpha, macOS-first. Engine, pantry window, and capture from phone or laptop
-built and tested (57 tests, CI on macOS / Python 3.11–3.13). The `.app` bundle,
+built and tested (57 tests; CI on macOS and Linux, Python 3.11–3.13). The `.app` bundle,
 built-in email ingestion, and PyPI release are specified in PRD v3 but **not
 built** — installation still needs a terminal.
 
@@ -91,6 +91,7 @@ explicit, separate opt-in, never bundled into a ToS.
 
 - `uv run pytest -q` must pass. New code paths need tests, including failure paths.
 - `uv run python scripts/demo.py --serve` seeds a fake household and opens the UI.
+- `uv run ruff check .` must pass too; config is in `pyproject.toml`.
 - CI asserts the exact MCP surface — tools, prompts and resource templates —
   so adding any of them means updating `.github/workflows/ci.yml`. It also
   builds the wheel and checks `prompts/` and `recipes/` are inside it; they are
@@ -100,6 +101,10 @@ explicit, separate opt-in, never bundled into a ToS.
   headline claim is that nothing leaves the machine. System fonts only; the
   design gets its character from the ledger treatment (mono tabular figures,
   ruled sections, colour spent only where attention is needed).
+- Public-facing docs a stranger reads first, in order: `README.md`,
+  `CONTRIBUTING.md`, `SECURITY.md`, `CODE_OF_CONDUCT.md`, `CHANGELOG.md`.
+  Keep the README honest about what is *not* built — the gap between the idea
+  and the code is where open-source projects usually mislead people.
 
 ## Skill routing
 

@@ -6,9 +6,15 @@ on:
 
 jobs:
   test:
-    runs-on: macos-latest
+    # macOS is the target platform, but the server is pure Python and most
+    # contributors are not on a Mac — a green tick has to mean something to
+    # them too.
+    name: tests (${{ matrix.os }}, py${{ matrix.python-version }})
+    runs-on: ${{ matrix.os }}
     strategy:
+      fail-fast: false
       matrix:
+        os: [macos-latest, ubuntu-latest]
         python-version: ["3.11", "3.12", "3.13"]
     steps:
       - uses: actions/checkout@v4
@@ -16,7 +22,29 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
       - run: uv run pytest -q
-      - name: MCP surface smoke test
+
+  lint:
+    name: lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.12"
+      - run: uv run ruff check .
+
+  mcp:
+    name: MCP surface
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.12"
+
+      # Tools, prompts and resources are a public contract: an agent's
+      # instructions are written against these exact names.
+      - name: Tools, prompts and resources are all served
         run: |
           { printf '%s\n' \
             '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"ci","version":"0"}}}' \
@@ -45,13 +73,26 @@ jobs:
           print('MCP surface OK:', len(tools), 'tools, 2 prompts, recipes readable')
           "
 
-      - name: Packaged wheel carries prompts and recipes
+      # prompts/ and recipes/ are served over MCP, so a wheel without them is
+      # a broken install that looks fine until an agent asks for one.
+      - name: The wheel carries the prompts and recipes
         run: |
           uv build --wheel -o /tmp/whl
           python3 -c "
           import glob, zipfile
           names = zipfile.ZipFile(glob.glob('/tmp/whl/*.whl')[0]).namelist()
-          for need in ('homestock/prompts/ingestion.md', 'homestock/recipes/tesco.yaml'):
+          for need in ('homestock/prompts/ingestion.md', 'homestock/prompts/onboarding.md',
+                       'homestock/recipes/tesco.yaml'):
               assert need in names, (need, names)
           print('wheel OK: prompts and recipes ship with the package')
           "
+
+      # A stranger's first command. It has to work without uv, too.
+      - name: Installs and runs from a plain pip venv
+        run: |
+          python3 -m venv /tmp/pipenv
+          /tmp/pipenv/bin/pip install -q .
+          /tmp/pipenv/bin/python -c "import homestock.server, homestock.ui; print('import OK')"
+          test -x /tmp/pipenv/bin/homestock
+          test -x /tmp/pipenv/bin/homestock-ui
+          echo "console scripts OK"

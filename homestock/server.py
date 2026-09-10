@@ -23,7 +23,8 @@ import os
 import re
 import sqlite3
 import statistics
-from datetime import date, datetime, timedelta, timezone
+from datetime import UTC, date, datetime, timedelta
+from itertools import pairwise
 from pathlib import Path
 
 from mcp.server.fastmcp import FastMCP
@@ -236,7 +237,7 @@ def get_db() -> sqlite3.Connection:
 
 
 def _today() -> date:
-    return datetime.now(timezone.utc).date()
+    return datetime.now(UTC).date()
 
 
 def _validate_occurred_at(value: str) -> str | None:
@@ -326,7 +327,7 @@ def _item_stats(conn: sqlite3.Connection, name: str) -> dict | None:
     confidence = "low"
     if purchases >= 2:
         ds = [date.fromisoformat(d) for d in dates]
-        intervals = [(b - a).days for a, b in zip(ds, ds[1:])]
+        intervals = [(b - a).days for a, b in pairwise(ds)]
         median_interval = statistics.median(intervals)
         cv, confidence = _interval_confidence(intervals)
     days_since = (_today() - date.fromisoformat(dates[-1])).days if dates else None
@@ -552,7 +553,7 @@ def get_events(item: str | None = None, since: str | None = None) -> list[dict]:
 
 
 def _now_iso() -> str:
-    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    return datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 def _lookup(conn: sqlite3.Connection, name: str) -> sqlite3.Row | None:

@@ -12,12 +12,16 @@ from datetime import date, timedelta
 
 os.environ.setdefault("HOMESTOCK_DB", os.path.join(tempfile.mkdtemp(), "demo.db"))
 
-from homestock import server  # noqa: E402
+from homestock import server
 
 server.DB_PATH = os.environ["HOMESTOCK_DB"]
 server.init_db()
 
-fn = lambda t: t.fn if hasattr(t, "fn") else t
+def fn(tool):
+    """FastMCP wraps each tool; the plain function is under .fn."""
+    return tool.fn if hasattr(tool, "fn") else tool
+
+
 add_items, get_stock, order = fn(server.add_items), fn(server.get_stock), fn(server.what_should_i_order)
 set_shelf_life, expiring = fn(server.set_shelf_life), fn(server.get_expiring_soon)
 record_ingest_run = fn(server.record_ingest_run)
@@ -97,7 +101,7 @@ print(f"  Database: {server.DB_PATH}")
 print("  Every number above is recomputable from get_events(). No magic.")
 
 if "--serve" in sys.argv:
-    from homestock import ui  # noqa: E402
+    from homestock import ui
 
     print()
     ui.main()

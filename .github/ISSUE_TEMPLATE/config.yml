@@ -1,0 +1,8 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Security or privacy problem
+    url: https://github.com/Thomaspeel6/HomeStock/security/advisories/new
+    about: Please report anything exploitable privately, not as a public issue.
+  - name: How something is meant to work
+    url: https://github.com/Thomaspeel6/HomeStock/blob/main/PRD-HomeStock-v3.md
+    about: The product spec, including what is deliberately not built yet.
