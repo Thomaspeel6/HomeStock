@@ -903,6 +903,74 @@ def consume_items(items: list[dict]) -> dict:
     return {"consumed": consumed, "marked_finished": finished, "unknown": unknown}
 
 
+# --- Prompts and resources -------------------------------------------------
+#
+# The tools are only half of what an agent needs. Until now the ingestion
+# procedure lived in prompts/ and the retailer recipes in recipes/, which meant
+# an MCP client had to also have filesystem access, in the right directory, to
+# do the job — a requirement nothing in the protocol expresses. Serving them
+# over MCP makes the server self-contained: connect it, and everything needed
+# to run ingestion arrives with it.
+
+_RECIPE_NAME = re.compile(r"^[a-z0-9][a-z0-9-]{0,40}$")
+
+
+def _asset(rel: str) -> Path | None:
+    """Find a shipped file, whether running from a checkout or an installed
+    wheel (where pyproject force-includes these under the package)."""
+    here = Path(__file__).resolve().parent
+    for base in (here, here.parent):
+        candidate = base / rel
+        if candidate.is_file():
+            return candidate
+    return None
+
+
+def _read_asset(rel: str, missing: str) -> str:
+    path = _asset(rel)
+    return path.read_text(encoding="utf-8") if path else missing
+
+
+@mcp.prompt()
+def onboarding() -> str:
+    """First run: consent, backfill the user's receipt history, and give them
+    the pantry reveal. Follow this before any ingestion."""
+    return _read_asset("prompts/onboarding.md",
+                       "prompts/onboarding.md is missing from this installation.")
+
+
+@mcp.prompt()
+def ingestion() -> str:
+    """The scheduled ingestion procedure: which emails to read, how to record
+    them, and the rules that keep it from guessing. Run this on a schedule, or
+    as catch-up before answering questions about stock."""
+    return _read_asset("prompts/ingestion.md",
+                       "prompts/ingestion.md is missing from this installation.")
+
+
+@mcp.resource("homestock://recipes")
+def recipes_index() -> str:
+    """Retailers HomeStock knows how to read, and nothing else is ever read.
+    Each name resolves at homestock://recipes/{retailer}."""
+    d = _asset("recipes/TEMPLATE.md")
+    names = sorted(f.stem for f in d.parent.glob("*.yaml")) if d else []
+    if not names:
+        return "No recipes are installed."
+    lines = ["Retailer recipes available (homestock://recipes/<name>):", ""]
+    lines += [f"- {n}" for n in names]
+    return "\n".join(lines)
+
+
+@mcp.resource("homestock://recipes/{retailer}")
+def recipe(retailer: str) -> str:
+    """One retailer's recipe: which sender domains to trust, which email type
+    carries the true line items, and how to read them. Data, never code."""
+    if not _RECIPE_NAME.match(retailer or ""):
+        return f"Invalid retailer name {retailer!r}."
+    return _read_asset(f"recipes/{retailer}.yaml",
+                       f"No recipe for {retailer!r} — see homestock://recipes for the list.")
+
+
 def main() -> None:
     init_db()
     mcp.run()

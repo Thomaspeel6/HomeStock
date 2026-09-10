@@ -16,24 +16,42 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
       - run: uv run pytest -q
-      - name: MCP handshake smoke test
+      - name: MCP surface smoke test
         run: |
-          printf '%s\n' \
+          { printf '%s\n' \
             '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"ci","version":"0"}}}' \
             '{"jsonrpc":"2.0","method":"notifications/initialized"}' \
             '{"jsonrpc":"2.0","id":2,"method":"tools/list"}' \
+            '{"jsonrpc":"2.0","id":3,"method":"prompts/list"}' \
+            '{"jsonrpc":"2.0","id":4,"method":"resources/templates/list"}' \
+            '{"jsonrpc":"2.0","id":5,"method":"resources/read","params":{"uri":"homestock://recipes/tesco"}}'; \
+            sleep 2; } \
           | uv run python -m homestock 2>/dev/null \
           | python3 -c "
           import json,sys
-          tools=[]
+          got={}
           for line in sys.stdin:
               m=json.loads(line)
-              if m.get('id')==2:
-                  tools=sorted(t['name'] for t in m['result']['tools'])
+              if 'id' in m: got[m['id']]=m.get('result')
+          tools=sorted(t['name'] for t in got[2]['tools'])
           expected=['add_alias','add_capture','add_items','check_recipe','consume_items','correct_stock',
                     'discard_item','get_events','get_expiring_soon','get_health','get_stock','list_aliases',
                     'list_captures','merge_items','record_ingest_run','resolve_capture','set_shelf_life',
                     'void_event','what_should_i_order']
           assert tools==expected, tools
-          print('MCP handshake OK:', tools)
+          assert sorted(p['name'] for p in got[3]['prompts'])==['ingestion','onboarding']
+          assert [t['uriTemplate'] for t in got[4]['resourceTemplates']]==['homestock://recipes/{retailer}']
+          assert 'sender_domains' in got[5]['contents'][0]['text']
+          print('MCP surface OK:', len(tools), 'tools, 2 prompts, recipes readable')
+          "
+
+      - name: Packaged wheel carries prompts and recipes
+        run: |
+          uv build --wheel -o /tmp/whl
+          python3 -c "
+          import glob, zipfile
+          names = zipfile.ZipFile(glob.glob('/tmp/whl/*.whl')[0]).namelist()
+          for need in ('homestock/prompts/ingestion.md', 'homestock/recipes/tesco.yaml'):
+              assert need in names, (need, names)
+          print('wheel OK: prompts and recipes ship with the package')
           "

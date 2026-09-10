@@ -98,7 +98,7 @@ window on it. Nothing touches your email, and the demo database is thrown away.
 To run it for real:
 
 ```bash
-uv run pytest -q            # 52 tests
+uv run pytest -q            # 57 tests
 uv run homestock-ui         # the pantry window   -> http://127.0.0.1:7777
 uv run homestock-ui --lan   # ...also reachable from your phone
 uv run homestock            # the MCP server (stdio)
@@ -163,6 +163,16 @@ don't become three items with three wrong repurchase cycles.
 | `consume_items(items[])` | Record cooking. `finished: true` for anything you used the last of. |
 | `add_alias(alias, item)` / `list_aliases(item?)` | Teach it that "TESCO SEMI SKMD MILK" is the milk it already knows. |
 | `get_health()` | Diagnostics. Is ingestion actually running? |
+
+### Prompts and recipes come over MCP
+
+Connect the server and an agent has everything it needs — no filesystem access,
+no hunting for the right directory:
+
+- **Prompts** — `onboarding` (consent, backfill, the reveal) and `ingestion`
+  (the scheduled procedure, and the rules that stop it guessing).
+- **Resources** — `homestock://recipes` lists the retailers it can read;
+  `homestock://recipes/{retailer}` returns one.
 
 ## Retailer recipes (community)
 

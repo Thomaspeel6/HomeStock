@@ -16,14 +16,15 @@ OCR pipelines and per-retailer parsers. Do not build from it.
 ## Status
 
 Alpha, macOS-first. Engine, pantry window, and capture from phone or laptop
-built and tested (52 tests, CI on macOS / Python 3.11–3.13). The `.app` bundle,
+built and tested (57 tests, CI on macOS / Python 3.11–3.13). The `.app` bundle,
 built-in email ingestion, and PyPI release are specified in PRD v3 but **not
 built** — installation still needs a terminal.
 
 ## Architecture
 
 ```
-homestock.db  (SQLite, WAL)  <--  homestock/server.py   19 MCP tools, stdio
+homestock.db  (SQLite, WAL)  <--  homestock/server.py   19 tools + 2 prompts
+                                                        + recipe resources, stdio
                              <--  homestock/ui.py       local HTTP + capture
                                                         127.0.0.1, or LAN if asked
 ```
@@ -90,8 +91,15 @@ explicit, separate opt-in, never bundled into a ToS.
 
 - `uv run pytest -q` must pass. New code paths need tests, including failure paths.
 - `uv run python scripts/demo.py --serve` seeds a fake household and opens the UI.
-- CI asserts the exact MCP tool list — adding a tool means updating
-  `.github/workflows/ci.yml`.
+- CI asserts the exact MCP surface — tools, prompts and resource templates —
+  so adding any of them means updating `.github/workflows/ci.yml`. It also
+  builds the wheel and checks `prompts/` and `recipes/` are inside it; they are
+  served over MCP, so a wheel without them is a broken install.
+- **The UI must not load a webfont or any remote asset.** A request to a font
+  CDN would leak that this household runs HomeStock, from a product whose
+  headline claim is that nothing leaves the machine. System fonts only; the
+  design gets its character from the ledger treatment (mono tabular figures,
+  ruled sections, colour spent only where attention is needed).
 
 ## Skill routing
 

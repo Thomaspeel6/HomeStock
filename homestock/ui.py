@@ -131,135 +131,232 @@ def save_photo(data_url: str) -> tuple[str | None, str | None]:
     path.write_bytes(raw)
     return str(path), mime
 
-
+# A local-first app cannot pull a webfont: a request to fonts.googleapis.com
+# would leak that this household is running HomeStock, from a product whose
+# whole claim is that nothing leaves the machine. So the type personality has
+# to come from treatment rather than a downloaded face — which is no loss,
+# because this subject already has a vernacular. A pantry is a ledger: every
+# figure is monospaced and tabular, sections are ruled rather than boxed, and
+# quantities line up in a column the way they do on a receipt.
+#
+# Colour is spent only on what needs attention. Something that is simply fine
+# gets no marker at all — no dot, no tint — so the eye lands on the two rows
+# that actually want acting on rather than sweeping twenty identical chips.
 CSS = """
 :root {
-  --bg:#faf9f7; --card:#fff; --ink:#1c1a17; --muted:#6b6560; --line:#e6e1da;
-  --ok:#2f7d4f; --low:#b8720c; --out:#b2402c; --accent:#1c1a17;
+  --paper:#f4f5f2; --surface:#fbfcfa; --ink:#191d1a; --muted:#626b64;
+  --rule:#dfe3dc; --hair:#ebeee8; --track:#dce1d8;
+  --alert:#9c3a26; --warn:#8a6110; --link:#2b5443;
+  --sans:-apple-system,BlinkMacSystemFont,"Segoe UI",system-ui,sans-serif;
+  --mono:ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,monospace;
 }
 @media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) {
-  --bg:#171614; --card:#211f1c; --ink:#f2efea; --muted:#a09a92; --line:#332f2b;
-  --ok:#6cc48d; --low:#e0a44a; --out:#e3806a; --accent:#f2efea;
+  --paper:#121513; --surface:#191d1a; --ink:#e7eae5; --muted:#939c95;
+  --rule:#272d28; --hair:#1e231f; --track:#2b322c;
+  --alert:#df8b74; --warn:#d6a74e; --link:#84bda1;
 } }
 :root[data-theme="dark"] {
-  --bg:#171614; --card:#211f1c; --ink:#f2efea; --muted:#a09a92; --line:#332f2b;
-  --ok:#6cc48d; --low:#e0a44a; --out:#e3806a; --accent:#f2efea;
+  --paper:#121513; --surface:#191d1a; --ink:#e7eae5; --muted:#939c95;
+  --rule:#272d28; --hair:#1e231f; --track:#2b322c;
+  --alert:#df8b74; --warn:#d6a74e; --link:#84bda1;
 }
 * { box-sizing:border-box; }
-body { background:var(--bg); color:var(--ink); font:16px/1.5 ui-sans-serif,-apple-system,"Segoe UI",system-ui,sans-serif;
-       margin:0 auto; max-width:760px; padding:16px; padding-block:32px; }
-h1 { font-size:1.6rem; margin:0 0 4px; letter-spacing:-.02em; }
-h2 { font-size:.8rem; text-transform:uppercase; letter-spacing:.08em; color:var(--muted);
-     margin:32px 0 10px; font-weight:600; }
-.sub { color:var(--muted); margin:0 0 8px; }
-.card { background:var(--card); border:1px solid var(--line); border-radius:12px; overflow:hidden; }
-.row { display:flex; align-items:center; gap:12px; padding:12px 14px; border-top:1px solid var(--line); flex-wrap:wrap; }
-.row:first-child { border-top:none; }
-.name { font-weight:550; flex:1 1 180px; min-width:0; }
-.why { color:var(--muted); font-size:.85rem; flex:1 1 100%; order:3; }
-@media (min-width:560px) { .why { flex:0 1 auto; order:0; text-align:right; } }
-.dot { width:8px; height:8px; border-radius:50%; flex:none; }
-.s-likely_in_stock .dot { background:var(--ok); }
-.s-likely_low .dot { background:var(--low); }
-.s-likely_out .dot, .s-expiring .dot { background:var(--out); }
-.s-unknown .dot { background:var(--line); border:1px solid var(--muted); }
-.acts { display:flex; gap:6px; flex:none; }
-button { font:inherit; font-size:.85rem; padding:5px 11px; border-radius:999px; cursor:pointer;
-         border:1px solid var(--line); background:transparent; color:var(--ink); }
-button:hover { border-color:var(--accent); }
-button:disabled { opacity:.45; cursor:default; }
-.conf-low { opacity:.6; }
-footer { margin-top:40px; padding-top:16px; border-top:1px solid var(--line);
-         color:var(--muted); font-size:.82rem; }
-footer code { font-size:.95em; word-break:break-all; }
-.warn { background:color-mix(in srgb, var(--out) 12%, transparent); border:1px solid var(--out);
-        border-radius:10px; padding:12px 14px; margin:16px 0; }
-.note { background:color-mix(in srgb, var(--ok) 10%, transparent); border:1px solid var(--ok);
-        border-radius:10px; padding:12px 14px; margin:16px 0; }
-.empty { color:var(--muted); padding:14px; }
-input[type=text], input[type=tel], textarea {
-  font:inherit; width:100%; padding:11px 13px; border-radius:10px; color:var(--ink);
-  border:1px solid var(--line); background:var(--bg); }
-label { display:block; font-weight:550; margin:0 0 6px; }
-.big { display:block; width:100%; padding:18px; font-size:1.05rem; text-align:center;
-       border-radius:12px; margin-bottom:10px; }
-.code { font:600 2.2rem/1.2 ui-monospace,SFMono-Regular,Menlo,monospace;
-        letter-spacing:.15em; text-align:center; margin:10px 0; }
-.stack > * + * { margin-top:14px; }
-.hint { color:var(--muted); font-size:.85rem; margin:6px 0 0; }
+body {
+  background:var(--paper); color:var(--ink); font:16px/1.5 var(--sans);
+  margin:0 auto; max-width:720px; padding:0 20px; padding-block:40px 56px;
+  font-variant-numeric:tabular-nums;
+}
+h1 { font-size:1.45rem; font-weight:600; letter-spacing:-.022em; margin:0 0 6px; }
+.meta { font:.76rem/1.5 var(--mono); color:var(--muted); margin:0; letter-spacing:.01em; }
+
+/* Sections are ruled, not boxed: the label sits on the rule like a ledger head. */
+h2 {
+  display:flex; align-items:center; gap:12px; margin:38px 0 2px;
+  font:500 .7rem/1 var(--mono); letter-spacing:.14em; text-transform:uppercase;
+  color:var(--muted);
+}
+h2::after { content:""; flex:1; height:1px; background:var(--rule); }
+
+.item {
+  display:grid; padding:11px 0; border-top:1px solid var(--hair);
+  grid-template-columns:minmax(0,1fr) auto;
+  grid-template-areas:"nm fig" "sub fig" "gauge gauge" "acts acts";
+  column-gap:16px; align-items:center;
+}
+.item:first-child { border-top:0; }
+@media (min-width:560px) {
+  .item {
+    grid-template-columns:minmax(0,1fr) auto auto auto;
+    grid-template-areas:"nm gauge fig acts" "sub gauge fig acts";
+    column-gap:20px;
+  }
+}
+.nm { grid-area:nm; font-size:1rem; font-weight:550; min-width:0; overflow-wrap:anywhere;
+      align-self:end; }
+.sub { grid-area:sub; font:.75rem/1.4 var(--mono); color:var(--muted); letter-spacing:.01em;
+       align-self:start; }
+
+/* Where you are in this item's own repurchase cycle. The track is one and a
+   half cycles, so the notch at two thirds is "due" and overshoot is visible
+   rather than merely asserted. */
+.gauge { grid-area:gauge; width:104px; max-width:100%; height:3px;
+         background:var(--track); position:relative; margin:8px 0 2px; }
+@media (min-width:560px) { .gauge { margin:0; } }
+.gauge b { position:absolute; left:0; top:0; bottom:0; background:var(--muted);
+           width:calc(min(var(--p), 1.5) / 1.5 * 100%); }
+.gauge.over b { background:var(--alert); }
+.gauge::after { content:""; position:absolute; left:66.667%; top:-3px; bottom:-3px;
+                width:1px; background:var(--ink); opacity:.3; }
+
+.fig { grid-area:fig; font:.76rem/1 var(--mono); color:var(--muted); letter-spacing:.02em;
+       white-space:nowrap; text-align:right; min-width:3.6em; }
+.fig.over { color:var(--alert); }
+.fig.soon { color:var(--warn); }
+
+.acts { grid-area:acts; display:flex; gap:14px; margin-top:5px; }
+@media (min-width:560px) { .acts { margin:0; justify-content:flex-end; } }
+.acts button {
+  font:.82rem/1.3 var(--sans); color:var(--link); background:none; border:0; padding:2px 0;
+  cursor:pointer; text-decoration:underline; text-decoration-thickness:1px;
+  text-underline-offset:3px; text-decoration-color:color-mix(in srgb, var(--link) 32%, transparent);
+}
+.acts button:hover { text-decoration-color:currentColor; }
+.acts button:focus-visible { outline:2px solid var(--link); outline-offset:3px; border-radius:2px; }
+.acts button:disabled { color:var(--muted); cursor:default; text-decoration:none; }
+
+/* Reference, not a to-do list: quiet, dense, two columns when there is room,
+   and the controls stay out of the way until you reach for them. */
+.house { display:grid; grid-template-columns:minmax(0,1fr); column-gap:40px; }
+@media (min-width:620px) { .house { grid-template-columns:repeat(2,minmax(0,1fr)); } }
+.house .item { padding:8px 0; grid-template-columns:minmax(0,1fr) auto;
+               grid-template-areas:"nm fig" "acts acts"; }
+.house .nm { font-size:.94rem; font-weight:500; align-self:center; }
+.house .sub { display:none; }
+.house .acts { margin-top:2px; justify-content:flex-start; }
+@media (hover:hover) and (min-width:620px) {
+  .house .acts { opacity:0; transition:opacity .12s; }
+  .house .item:hover .acts, .house .item:focus-within .acts { opacity:1; }
+}
+.unsure .nm { color:var(--muted); }
+
+.empty { color:var(--muted); font-size:.92rem; padding:14px 0 4px; margin:0; }
+
+/* Louder than any estimate on the page, because a silent ingestion failure
+   looks exactly like a quiet week. */
+.stale { border-left:3px solid var(--alert); padding:2px 0 2px 14px; margin:26px 0 0; }
+.stale strong { display:block; font-size:.95rem; }
+.stale span { font:.8rem/1.5 var(--mono); color:var(--muted); }
+
+.add { margin-top:14px; }
+.add input {
+  font:1rem/1.5 var(--sans); width:100%; padding:9px 0; color:var(--ink);
+  background:none; border:0; border-bottom:1px solid var(--rule);
+}
+.add input:focus { outline:0; border-bottom-color:var(--link); }
+.hint { font:.76rem/1.5 var(--mono); color:var(--muted); margin:8px 0 0; letter-spacing:.01em; }
+.pair { margin-top:22px; border-left:3px solid var(--link); padding:2px 0 2px 14px; }
+.pair .code { font:600 1.9rem/1.2 var(--mono); letter-spacing:.18em; margin:6px 0; }
+
+footer { margin-top:44px; padding-top:16px; border-top:1px solid var(--rule);
+         font:.76rem/1.6 var(--mono); color:var(--muted); letter-spacing:.01em; }
+footer p { margin:0 0 6px; }
+footer .prose { font-family:var(--sans); font-size:.82rem; letter-spacing:0; }
+code { font-family:var(--mono); word-break:break-all; }
+
+/* Capture: one primary act, two quieter ones. */
+.sheet > * + * { margin-top:22px; }
+.field label { display:block; font:500 .7rem/1 var(--mono); letter-spacing:.14em;
+               text-transform:uppercase; color:var(--muted); margin:0 0 8px; }
+.field input {
+  font:1rem/1.5 var(--sans); width:100%; padding:11px 13px; color:var(--ink);
+  background:var(--surface); border:1px solid var(--rule); border-radius:6px;
+}
+.field input:focus { outline:0; border-color:var(--link); }
+.primary {
+  display:block; width:100%; padding:20px; border-radius:8px; cursor:pointer;
+  font:550 1.05rem/1.2 var(--sans); color:var(--paper); background:var(--ink); border:0;
+}
+.secondary {
+  display:block; width:100%; padding:12px; border-radius:6px; cursor:pointer; margin-top:8px;
+  font:.9rem/1.2 var(--sans); color:var(--ink); background:none; border:1px solid var(--rule);
+}
+.primary:focus-visible, .secondary:focus-visible { outline:2px solid var(--link); outline-offset:2px; }
+.flash { min-height:1.4em; }
+@media (prefers-reduced-motion:reduce) { * { transition:none !important; } }
 """
 
 PAGE = """<title>HomeStock</title>
 <style>__CSS__</style></head><body>
 
 <h1>Your kitchen</h1>
-<p class="sub">Built from your receipts. Nothing typed in, nothing uploaded.</p>
-<div id="app">Loading…</div>
+<p class="meta" id="meta">Reading your receipts&hellip;</p>
+<div id="app"></div>
 
-<h2>Add something</h2>
-<div class="card stack" style="padding:14px">
-  <label for="quick">Type what you bought</label>
+<section class="add">
+  <h2>Add something</h2>
+  <label for="quick" class="sr" hidden>Type what you bought</label>
   <input type="text" id="quick" placeholder="2 milk, bread, 6 eggs" autocomplete="off">
-  <p class="hint">Goes to the inbox for your agent to read — it works out the
-     names and quantities. <span id="pending"></span></p>
-  <p id="lanbox"></p>
-</div>
+  <p class="hint" id="pending">Goes to the inbox for your agent to read.</p>
+  <div id="lanbox"></div>
+</section>
 
 <footer>
   <p id="foot"></p>
-  <p>Everything lives in one file on this computer. Copy it to back it up, delete it to erase
+  <p class="prose">One file on this computer. Copy it to back it up, delete it to erase
      everything. Nothing is sent anywhere.</p>
 </footer>
 
 <script>
 const TOKEN = "__TOKEN__";
 const LAN = __LAN__;
-// What is useful to say about an item depends on why it is listed.
 const ACTIONS = {
-  order:    [["have", "Already have it"]],
-  expiring: [["out", "Used it"], ["binned", "Binned it"]],
-  shelf:    [["have", "Still have it"], ["out", "Out of it"]],
+  buy:   [["have", "Already have it"]],
+  soon:  [["out", "Used it"], ["binned", "Binned it"]],
+  house: [["have", "Still have it"], ["out", "Out of it"]],
 };
 const esc = s => String(s).replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+const api = (path, body) => fetch(path, {
+  method: "POST",
+  headers: {"content-type": "application/json", "x-homestock-token": TOKEN},
+  body: JSON.stringify(body),
+});
 
-async function api(path, body) {
-  return fetch(path, {
-    method: "POST",
-    headers: {"content-type": "application/json", "x-homestock-token": TOKEN},
-    body: JSON.stringify(body),
-  });
+function gauge(it) {
+  if (!it.median_interval_days) return "";
+  const p = it.days_since_observation / it.median_interval_days;
+  return `<span class="gauge${p > 1 ? " over" : ""}" style="--p:${p.toFixed(2)}"
+            role="img" aria-label="${Math.round(p * 100)}% through its usual cycle"><b></b></span>`;
 }
 
-function row(it, kind) {
-  const state = kind === "expiring" ? "expiring" : it.estimated_state;
-  let why;
-  if (kind === "expiring") {
-    why = it.days_left < 0 ? `use-by was ${-it.days_left}d ago`
-        : it.days_left === 0 ? "use by today" : `use within ${it.days_left}d`;
-  } else if (kind === "order") {
-    why = it.reason === "you said you were out" ? "you said you were out"
-        : `${it.days_since_observation}d since last, usually every ${Math.round(it.median_interval_days)}d`;
+function item(it, kind) {
+  let sub, fig = "", cls = "";
+  if (kind === "soon") {
+    sub = `keeps about ${it.shelf_life_days}d${it.storage ? " in the " + it.storage : ""}`;
+    fig = `<span class="fig soon">${it.days_left <= 0 ? "today" : "in " + it.days_left + "d"}</span>`;
   } else if (it.confirmed) {
-    why = "you confirmed this";
+    sub = it.corrected_quantity === 0 ? "you said you were out" : "you confirmed this";
+    if (kind === "buy") fig = `<span class="fig over">now</span>`;
   } else if (it.median_interval_days) {
-    why = `bought ${it.days_since_observation}d ago, usually every ${Math.round(it.median_interval_days)}d`;
+    sub = `every ${Math.round(it.median_interval_days)}d, last ${it.days_since_observation}d ago`;
+    const over = it.days_since_observation - Math.round(it.median_interval_days);
+    fig = `<span class="fig${over > 0 ? " over" : ""}">${over > 0 ? "+" + over + "d" : "in " + -over + "d"}</span>`;
   } else {
-    why = `bought once, ${it.days_since_last_purchase}d ago`;
+    sub = `bought once, ${it.days_since_last_purchase}d ago`;
+    cls = " unsure";
   }
-  const dim = it.confidence === "low" && !it.confirmed ? " conf-low" : "";
-  return `<div class="row s-${state}${dim}">
-    <span class="dot"></span>
-    <span class="name">${esc(it.name)}</span>
-    <span class="why">${esc(why)}</span>
+  return `<div class="item${cls}">
+    <span class="nm">${esc(it.name)}</span>
+    <span class="sub">${esc(sub)}</span>
+    ${kind === "buy" ? gauge(it) : ""}${fig}
     <span class="acts">${ACTIONS[kind].map(a =>
-      `<button data-item="${esc(it.name)}" data-action="${a[0]}">${a[1]}</button>`).join("")}
-    </span>
+      `<button type="button" data-item="${esc(it.name)}" data-action="${a[0]}">${a[1]}</button>`).join("")}</span>
   </div>`;
 }
 
-function section(title, items, kind, empty) {
-  if (!items.length) return `<h2>${title}</h2><div class="card"><p class="empty">${empty}</p></div>`;
-  return `<h2>${title}</h2><div class="card">${items.map(i => row(i, kind)).join("")}</div>`;
+function section(title, rows, kind, empty, wrap) {
+  const body = rows.length ? rows.map(r => item(r, kind)).join("")
+                           : `<p class="empty">${empty}</p>`;
+  return `<h2>${title}</h2><div class="${wrap || ""}">${body}</div>`;
 }
 
 async function render() {
@@ -267,22 +364,22 @@ async function render() {
   const h = s.health;
   let html = "";
   if (h.stale) {
-    html += `<div class="warn"><strong>Not up to date.</strong> ` + (h.last_ingest_at
-      ? `No receipts have been read for ${h.days_since_ingest} days.`
-      : `No receipts have been read yet.`) +
-      ` Estimates below may be out of date.</div>`;
+    html += `<p class="stale"><strong>Not up to date.</strong><span>` + (h.last_ingest_at
+      ? `no receipts read for ${h.days_since_ingest} days &mdash; estimates below may be stale`
+      : `no receipts read yet &mdash; nothing below is based on much`) + `</span></p>`;
   }
-  html += section("Buy these", s.order, "order", "Nothing looks due. Enjoy it.");
-  html += section("Use soon", s.expiring, "expiring", "Nothing about to go off.");
-  html += section("Probably in the house", s.shelf, "shelf", "No history yet — read some receipts to start.");
+  html += section("Buy these", s.order, "buy", "Nothing looks due.");
+  html += section("Use soon", s.expiring, "soon", "Nothing about to go off.");
+  html += section("In the house", s.shelf, "house", "No history yet.", "house");
   document.getElementById("app").innerHTML = html;
 
-  document.getElementById("pending").textContent =
-    s.pending_captures ? `${s.pending_captures} waiting to be read.` : "";
-  document.getElementById("foot").innerHTML =
-    `${h.items} items - ${h.receipt_lines} receipt lines` +
-    (h.last_ingest_at ? ` - last read ${esc(h.last_ingest_at)}` : ``) +
-    `<br>Database: <code>${esc(h.db_path)}</code>`;
+  document.getElementById("meta").textContent =
+    `${h.items} items · ${h.receipt_lines} receipt lines`
+    + (h.last_ingest_at ? ` · last read ${h.last_ingest_at.slice(0, 16)}` : "");
+  document.getElementById("pending").textContent = s.pending_captures
+    ? `${s.pending_captures} waiting to be read.`
+    : "Goes to the inbox for your agent to read.";
+  document.getElementById("foot").innerHTML = `Database: <code>${esc(h.db_path)}</code>`;
 
   document.querySelectorAll("button[data-item]").forEach(b => b.onclick = async () => {
     document.querySelectorAll("button[data-item]").forEach(x => x.disabled = true);
@@ -299,19 +396,18 @@ document.getElementById("quick").addEventListener("keydown", async e => {
 });
 
 async function showPairing() {
+  const box = document.getElementById("lanbox");
   if (!LAN) {
-    document.getElementById("lanbox").innerHTML =
-      `<span class="hint">To send photos from your phone, restart with
-       <code>homestock-ui --lan</code>.</span>`;
+    box.innerHTML = `<p class="hint">To send photos from your phone, restart with
+      <code>homestock-ui --lan</code>.</p>`;
     return;
   }
   const p = await (await fetch("/api/pairing")).json();
-  document.getElementById("lanbox").innerHTML =
-    `<div class="note"><strong>On your phone</strong>, on the same wifi, open
-     <code>${esc(p.url)}</code> and enter this code:
-     <div class="code">${esc(p.code.slice(0,3))}-${esc(p.code.slice(3))}</div>
-     <span class="hint">Expires in ${Math.round(p.expires_in/60)} minutes. Photos go
-     straight to this computer — never to the internet.</span></div>`;
+  box.innerHTML = `<div class="pair"><strong>On your phone</strong>, on this wifi, open
+    <code>${esc(p.url)}</code>
+    <div class="code">${esc(p.code.slice(0, 3))} ${esc(p.code.slice(3))}</div>
+    <span class="hint">expires in ${Math.round(p.expires_in / 60)} min · photos go
+    straight to this computer</span></div>`;
 }
 
 render();
@@ -322,12 +418,14 @@ showPairing();
 PAIR_PAGE = """<title>Pair with HomeStock</title>
 <style>__CSS__</style></head><body>
 <h1>HomeStock</h1>
-<p class="sub">Enter the code shown on your computer to use this phone for capture.</p>
-<div class="card" style="padding:16px">
-  <label for="code">Pairing code</label>
-  <input type="tel" id="code" inputmode="numeric" autocomplete="off" placeholder="000000">
-  <p id="err" class="hint"></p>
-  <button class="big" id="go" style="margin-top:12px">Pair this phone</button>
+<p class="meta">Enter the code on your computer to use this phone for capture.</p>
+<div class="sheet" style="margin-top:28px">
+  <div class="field">
+    <label for="code">Pairing code</label>
+    <input type="tel" id="code" inputmode="numeric" autocomplete="off" placeholder="000 000">
+  </div>
+  <p class="hint flash" id="err"></p>
+  <button type="button" class="primary" id="go">Pair this phone</button>
 </div>
 <script>
 const go = document.getElementById("go");
@@ -348,22 +446,28 @@ go.onclick = async () => {
 CAPTURE_PAGE = """<title>HomeStock - Add</title>
 <style>__CSS__</style></head><body>
 <h1>Add to your kitchen</h1>
-<p class="sub">Photos are read on your computer. Nothing goes to the internet.</p>
+<p class="meta">Read on your computer. Nothing goes to the internet.</p>
 
-<div class="card" style="padding:16px">
-  <label class="big" for="shot" style="border:1px solid var(--line); cursor:pointer">
-    Photograph a receipt
-  </label>
-  <input type="file" id="shot" accept="image/*" capture="environment" hidden>
+<div class="sheet" style="margin-top:28px">
+  <div>
+    <button type="button" class="primary" id="shoot">Photograph a receipt</button>
+    <input type="file" id="shot" accept="image/*" capture="environment" hidden>
+    <p class="hint">The one that covers shopping in an actual shop.</p>
+  </div>
 
-  <label for="code" style="margin-top:18px">Barcode</label>
-  <input type="tel" id="code" inputmode="numeric" placeholder="scan or type the number">
-  <button class="big" id="scan" style="margin-top:8px">Scan with camera</button>
+  <div class="field">
+    <label for="code">Barcode</label>
+    <input type="tel" id="code" inputmode="numeric" placeholder="scan or type the number">
+    <button type="button" class="secondary" id="scan">Scan with camera</button>
+  </div>
 
-  <label for="note" style="margin-top:18px">Or just type it</label>
-  <input type="text" id="note" placeholder="2 milk, bread, 6 eggs" autocomplete="off">
-  <button class="big" id="send" style="margin-top:8px">Add</button>
-  <p id="msg" class="hint"></p>
+  <div class="field">
+    <label for="note">Or just type it</label>
+    <input type="text" id="note" placeholder="2 milk, bread, 6 eggs" autocomplete="off">
+    <button type="button" class="secondary" id="send">Add</button>
+  </div>
+
+  <p class="hint flash" id="msg"></p>
 </div>
 <footer><p id="recent"></p></footer>
 
@@ -376,11 +480,13 @@ async function send(body) {
     body: JSON.stringify(body),
   });
   const b = await r.json().catch(() => ({}));
-  msg.textContent = r.ok ? "Added. Your computer will read it shortly." : (b.error || "That did not work.");
+  msg.textContent = r.ok ? "Added. Your computer will read it shortly."
+                         : (b.error || "That did not work.");
   if (r.ok) recent();
 }
 
-document.getElementById("shot").addEventListener("change", async e => {
+document.getElementById("shoot").onclick = () => document.getElementById("shot").click();
+document.getElementById("shot").addEventListener("change", e => {
   const f = e.target.files[0];
   if (!f) return;
   const reader = new FileReader();
@@ -393,9 +499,10 @@ document.getElementById("send").onclick = () => {
   const note = document.getElementById("note"), code = document.getElementById("code");
   if (code.value.trim()) { send({kind: "barcode", text: code.value, device: "phone"}); code.value = ""; }
   else if (note.value.trim()) { send({kind: "note", text: note.value, device: "phone"}); note.value = ""; }
+  else msg.textContent = "Type what you bought first.";
 };
 
-// Chrome and recent Safari can read a barcode natively; everything else types it.
+// Chrome and recent Safari read a barcode natively; everything else types it.
 document.getElementById("scan").onclick = async () => {
   if (!("BarcodeDetector" in window)) {
     msg.textContent = "This browser cannot scan — type the number, or photograph the label.";

@@ -494,3 +494,39 @@ def test_consumption_does_not_corrupt_repurchase_intervals():
     after = get_stock("eggs")
     assert after["median_interval_days"] == before == 10
     assert after["purchases_observed"] == 3
+
+
+# --- MCP surface: prompts and resources -------------------------------------
+# An agent needs more than tools. These used to be files the client had to find
+# on disk, in the right directory, which nothing in the protocol expresses.
+
+onboarding = _fn(server.onboarding)
+ingestion = _fn(server.ingestion)
+recipes_index = _fn(server.recipes_index)
+recipe = _fn(server.recipe)
+
+
+def test_prompts_carry_the_real_procedures():
+    for text, must in ((onboarding(), "Consent"), (ingestion(), "Sender filter first")):
+        assert must in text
+        assert "missing from this installation" not in text
+    # the rule that keeps ingestion honest has to survive being served
+    assert "Never guess" in ingestion()
+
+
+def test_recipes_are_readable_without_filesystem_access():
+    index = recipes_index()
+    assert "- tesco" in index and "- amazon" in index
+    body = recipe("tesco")
+    assert "sender_domains" in body and "delivery_receipt" in body
+
+
+def test_recipe_names_cannot_escape_the_recipes_directory():
+    for bad in ("../pyproject", "..", "/etc/passwd", "tesco/../../x", "", "Tesco!"):
+        assert "Invalid retailer name" in recipe(bad)
+    assert "No recipe for" in recipe("waitrose")
+
+
+def test_assets_resolve_from_a_checkout_or_an_installed_package():
+    assert server._asset("recipes/tesco.yaml") is not None
+    assert server._asset("recipes/nope.yaml") is None
