@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 import Observation
 
@@ -273,18 +274,56 @@ final class Backend {
 
     /// A photographed receipt from the Mac: same inbox the phone writes to, so
     /// there is one reading path rather than one per device.
+    ///
+    /// Always re-encoded to JPEG rather than shipped as-is. Typing a file by its
+    /// extension is how an AVIF ended up stored as image/jpeg and rejected much
+    /// later by a model as "unknown format"; re-encoding makes the declared type
+    /// true by construction, normalises HEIC, and shrinks a 4000px camera file
+    /// to something worth sending.
     func addPhoto(_ file: URL) async throws {
-        let data = try Data(contentsOf: file)
-        let mime = switch file.pathExtension.lowercased() {
-            case "png": "image/png"
-            case "webp": "image/webp"
-            case "heic": "image/heic"
-            default: "image/jpeg"
+        guard let image = NSImage(contentsOf: file) else {
+            throw Failure("That file could not be read as an image.")
         }
-        let dataURL = "data:\(mime);base64,\(data.base64EncodedString())"
+        guard let jpeg = Self.jpeg(from: image) else {
+            throw Failure("That image could not be converted.")
+        }
+        let dataURL = "data:image/jpeg;base64,\(jpeg.base64EncodedString())"
         _ = try await post("/api/capture",
                            ["kind": "receipt_photo", "data_url": dataURL, "device": "mac"])
         await refresh()
+    }
+
+    static let maxImageEdge: CGFloat = 1800
+
+    private static func jpeg(from image: NSImage) -> Data? {
+        guard let source = image.cgImage(forProposedRect: nil, context: nil, hints: nil)
+        else { return nil }
+        let w = CGFloat(source.width), h = CGFloat(source.height)
+        let scale = min(1, maxImageEdge / max(w, h))
+        let size = NSSize(width: (w * scale).rounded(), height: (h * scale).rounded())
+
+        let rep = NSBitmapImageRep(bitmapDataPlanes: nil,
+                                   pixelsWide: Int(size.width), pixelsHigh: Int(size.height),
+                                   bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true,
+                                   isPlanar: false, colorSpaceName: .deviceRGB,
+                                   bytesPerRow: 0, bitsPerPixel: 0)
+        guard let rep else { return nil }
+        NSGraphicsContext.saveGraphicsState()
+        NSGraphicsContext.current = NSGraphicsContext(bitmapImageRep: rep)
+        NSGraphicsContext.current?.cgContext.draw(source, in: CGRect(origin: .zero, size: size))
+        NSGraphicsContext.restoreGraphicsState()
+        return rep.representation(using: .jpeg, properties: [.compressionFactor: 0.82])
+    }
+
+    /// Hand the capture inbox to the configured model. The four doors fill it;
+    /// without this nothing ever empties it.
+    func readCaptures(provider: Provider, model: String, key: String?) async throws -> ReadResult {
+        var body: [String: Any] = ["provider": provider.id,
+                                   "model": model.isEmpty ? provider.defaultModel : model]
+        if let key, !key.isEmpty { body["api_key"] = key }
+        let data = try await post("/api/read_captures", body)
+        await refresh()
+        return try JSONDecoder().decode(ReadResult.self, from: data)
     }
 
     func undo(_ eventIDs: [Int]) async {

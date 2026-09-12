@@ -155,6 +155,28 @@ def build_state() -> dict:
             "pending_captures": len(list_captures("pending"))}
 
 
+def sniff_image(raw: bytes) -> tuple[str, str] | None:
+    """(mime, extension) read from the bytes, not from what the sender claimed.
+
+    A browser will happily hand over `data:image/jpeg` for an AVIF, and a file
+    dropped on the Mac app is typed by its extension. Trusting either means
+    storing a file whose declared format is a lie, which surfaces much later as
+    a model refusing the image with "unknown format"."""
+    if raw[:3] == b"\xff\xd8\xff":
+        return "image/jpeg", "jpg"
+    if raw[:8] == b"\x89PNG\r\n\x1a\n":
+        return "image/png", "png"
+    if raw[:4] == b"RIFF" and raw[8:12] == b"WEBP":
+        return "image/webp", "webp"
+    if raw[4:8] == b"ftyp":
+        brand = raw[8:12]
+        if brand in (b"heic", b"heix", b"heim", b"heis", b"mif1", b"msf1"):
+            return "image/heic", "heic"
+        if brand in (b"avif", b"avis"):
+            return "image/avif", "avif"
+    return None
+
+
 def save_photo(data_url: str) -> tuple[str | None, str | None]:
     """Decode a browser data: URL to a file beside the database.
 
@@ -164,16 +186,15 @@ def save_photo(data_url: str) -> tuple[str | None, str | None]:
         header, _, b64 = data_url.partition(",")
         if not b64 or not header.startswith("data:image/"):
             return None, None
-        mime = header[5:].split(";")[0]
-        ext = {"image/jpeg": "jpg", "image/png": "png", "image/webp": "webp",
-               "image/heic": "heic"}.get(mime)
-        if not ext:
-            return None, None
         raw = base64.b64decode(b64, validate=True)
     except (ValueError, binascii.Error):
         return None, None
     if not raw or len(raw) > MAX_UPLOAD:
         return None, None
+    sniffed = sniff_image(raw)
+    if sniffed is None:
+        return None, None
+    mime, ext = sniffed
     d = server._captures_dir()
     d.mkdir(parents=True, exist_ok=True)
     path = d / f"{time.strftime('%Y%m%d-%H%M%S')}-{secrets.token_hex(4)}.{ext}"
@@ -655,13 +676,38 @@ async function send(body) {
 }
 
 document.getElementById("shoot").onclick = () => document.getElementById("shot").click();
-document.getElementById("shot").addEventListener("change", e => {
+
+// Re-encode before sending. A modern phone camera produces a 4000px, 3MB file
+// that base64 inflates by a third, and a receipt is legible at a fraction of
+// that. It also normalises HEIC to JPEG, which is the format models can read.
+const MAX_EDGE = 1800, JPEG_QUALITY = 0.82;
+function shrink(file) {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    img.onload = () => {
+      const scale = Math.min(1, MAX_EDGE / Math.max(img.width, img.height));
+      const canvas = document.createElement("canvas");
+      canvas.width = Math.round(img.width * scale);
+      canvas.height = Math.round(img.height * scale);
+      canvas.getContext("2d").drawImage(img, 0, 0, canvas.width, canvas.height);
+      URL.revokeObjectURL(img.src);
+      resolve(canvas.toDataURL("image/jpeg", JPEG_QUALITY));
+    };
+    img.onerror = () => { URL.revokeObjectURL(img.src); reject(new Error("unreadable")); };
+    img.src = URL.createObjectURL(file);
+  });
+}
+
+document.getElementById("shot").addEventListener("change", async e => {
   const f = e.target.files[0];
-  if (!f) return;
-  const reader = new FileReader();
-  reader.onload = () => send({kind: "receipt_photo", data_url: reader.result, device: "phone"});
-  reader.readAsDataURL(f);
   e.target.value = "";
+  if (!f) return;
+  msg.textContent = "Preparing…";
+  try {
+    send({kind: "receipt_photo", data_url: await shrink(f), device: "phone"});
+  } catch (err) {
+    msg.textContent = "That image could not be read. Try photographing it again.";
+  }
 });
 
 document.getElementById("send").onclick = () => {
@@ -898,6 +944,18 @@ class Handler(BaseHTTPRequestHandler):
             if not isinstance(ids, list):
                 return self._json(400, {"error": "expected {event_ids}"})
             return self._json(200, {"undone": server.void_event_ids(ids)})
+
+        if path == "/api/read_captures":
+            # The four doors fill an inbox; this is what empties it.
+            provider = body.get("provider")
+            if not isinstance(provider, str):
+                return self._json(400, {"error": "expected {provider}"})
+            try:
+                return self._json(200, chat.read_captures(
+                    provider=provider, model=body.get("model"),
+                    api_key=body.get("api_key"), base_url=body.get("base_url")))
+            except chat.ChatError as e:
+                return self._json(502, {"error": str(e)})
 
         if path == "/api/chat":
             msgs, provider = body.get("messages"), body.get("provider")

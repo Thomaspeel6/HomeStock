@@ -1,6 +1,7 @@
 """Chat layer tests. No network: every provider is exercised against a fake
 transport, because the thing worth testing is the tool loop, not urllib."""
 
+import base64
 import json
 from datetime import UTC, datetime, timedelta
 
@@ -69,8 +70,9 @@ class FakeProvider:
         self.script = list(script)
         self.sent = []
 
-    def __call__(self, url, payload, headers):
-        self.sent.append({"url": url, "payload": payload, "headers": headers})
+    def __call__(self, url, payload, headers, timeout=None):
+        self.sent.append({"url": url, "payload": payload,
+                          "headers": headers, "timeout": timeout})
         return self.script.pop(0)
 
 
@@ -284,3 +286,113 @@ def test_read_only_chat_cannot_change_the_kitchen(monkeypatch):
     assert out["undo"] == []
     sent = fake.sent[0]["payload"]["tools"]
     assert not ({t["function"]["name"] for t in sent} & chat.WRITING_TOOLS)
+
+
+# --- Emptying the capture inbox ---------------------------------------------
+
+def test_reading_an_empty_inbox_does_not_call_a_model(monkeypatch):
+    def explode(*a, **k):
+        raise AssertionError("should not have called the provider")
+    monkeypatch.setattr(chat, "_post", explode)
+    assert chat.read_captures("openai", api_key="k")["read"] == 0
+
+
+def test_notes_and_barcodes_are_sent_as_text(monkeypatch):
+    add = _fn(server.add_capture)
+    add("note", text="2 milk")
+    add("barcode", text="5000119000011")
+    fake = FakeProvider([openai_reply(text="Recorded both.")])
+    monkeypatch.setattr(chat, "_post", fake)
+
+    chat.read_captures("openai", model="gpt-5", api_key="k")
+    sent = fake.sent[0]["payload"]["messages"]
+    user = [m for m in sent if m["role"] == "user"][0]
+    text = user["content"][0]["text"]
+    assert "2 milk" in text and "5000119000011" in text
+    assert "capture" in text                      # ids, so it can resolve them
+    assert len(user["content"]) == 1              # no image parts for text captures
+
+
+def test_a_photographed_receipt_is_actually_sent_as_an_image(monkeypatch, tmp_path):
+    """Otherwise 'photograph a receipt' is a button that cannot work."""
+    png = tmp_path / "receipt.png"
+    png.write_bytes(base64.b64decode(
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=="))
+    _fn(server.add_capture)("receipt_photo", path=str(png), mime="image/png")
+
+    for provider, finder in [("openai", lambda c: c["type"] == "image_url"),
+                             ("anthropic", lambda c: c["type"] == "image")]:
+        fake = FakeProvider([(openai_reply if provider == "openai" else anthropic_reply)(text="Done.")])
+        monkeypatch.setattr(chat, "_post", fake)
+        chat.read_captures(provider, model="m", api_key="k")
+        content = [m for m in fake.sent[0]["payload"]["messages"] if m["role"] == "user"][0]["content"]
+        assert any(finder(part) for part in content), provider
+
+
+def test_a_missing_photo_is_reported_not_silently_dropped(monkeypatch):
+    _fn(server.add_capture)("receipt_photo", path="/nowhere/gone.png", mime="image/png")
+    monkeypatch.setattr(chat, "_post", FakeProvider([]))
+    out = chat.read_captures("openai", api_key="k")
+    assert out["read"] == 0 and "missing" in out["reply"]
+
+
+def test_read_captures_counts_what_it_resolved(monkeypatch):
+    _fn(server.add_capture)("note", text="2 milk")
+    fake = FakeProvider([
+        openai_reply(calls=[("add_items", {"items": [{"name": "milk", "quantity": 2,
+                                                       "unit": "l", "line_no": 0}],
+                                            "source": "manual", "source_ref": "capture:1"})]),
+        openai_reply(calls=[("resolve_capture", {"capture_id": 1, "status": "done"})]),
+        openai_reply(text="Recorded 2l of milk."),
+    ])
+    monkeypatch.setattr(chat, "_post", fake)
+
+    out = chat.read_captures("openai", model="gpt-5", api_key="k")
+    assert out["read"] == 1
+    assert _fn(server.list_captures)("pending") == []
+    assert chat.run_tool("get_stock", {"item": "milk"})[0]["name"] == "milk"
+
+
+def test_a_capture_that_recorded_nothing_goes_back_in_the_inbox(monkeypatch):
+    """Observed with a local vision model: it narrated a full receipt for two
+    photographs, invented the same items for both, had every add_items
+    rejected, then marked all four captures done anyway. A capture marked read
+    that produced nothing is worse than one left waiting — the photo leaves the
+    inbox and never becomes stock."""
+    add = _fn(server.add_capture)
+    good = add("note", text="12 eggs")["capture_id"]
+    bad = add("note", text="something unreadable")["capture_id"]
+
+    fake = FakeProvider([
+        openai_reply(calls=[
+            ("add_items", {"items": [{"name": "eggs", "quantity": 12, "unit": "unit",
+                                      "line_no": 0}],
+                           "source": "manual", "source_ref": f"capture:{good}"}),
+            # claims to have recorded it, records nothing
+            ("resolve_capture", {"capture_id": good, "status": "done"}),
+            ("resolve_capture", {"capture_id": bad, "status": "done"}),
+        ]),
+        openai_reply(text="I recorded both captures."),
+    ])
+    monkeypatch.setattr(chat, "_post", fake)
+
+    out = chat.read_captures("openai", model="gpt-5", api_key="k")
+    assert out["read"] == 1 and out["reopened"] == [bad]
+    assert "produced nothing" in out["reply"]
+
+    still_waiting = [c["id"] for c in _fn(server.list_captures)("pending")]
+    assert still_waiting == [bad]
+
+
+def test_a_local_provider_gets_a_longer_deadline(monkeypatch):
+    """Two receipt photographs through a local vision model genuinely take
+    minutes, and timing that out looks identical to a broken app."""
+    fake = FakeProvider([openai_reply(text="hi")])
+    monkeypatch.setattr(chat, "_post", fake)
+    chat.chat([{"role": "user", "content": "hi"}], provider="ollama", model="m")
+    assert fake.sent[0]["timeout"] == chat.LOCAL_HTTP_TIMEOUT
+
+    fake = FakeProvider([openai_reply(text="hi")])
+    monkeypatch.setattr(chat, "_post", fake)
+    chat.chat([{"role": "user", "content": "hi"}], provider="openai", model="m", api_key="k")
+    assert fake.sent[0]["timeout"] == chat.HTTP_TIMEOUT

@@ -1,12 +1,17 @@
-# HomeStock
+<p align="center">
+  <img src="docs/img/logo.png" alt="HomeStock" width="132">
+</p>
 
-**Never run out. Never throw food away.** HomeStock reads your shopping
-receipts and keeps track of what's in your house — what you have, what you're
-about to run out of, what to eat before it goes off. You never type anything in.
+<h1 align="center">HomeStock</h1>
 
-Your data never leaves your computer. It's one file, on your disk, that you own.
+<p align="center">
+  <b>Never run out. Never throw food away.</b><br>
+  HomeStock reads your shopping receipts and keeps track of what's in your
+  house, so you never type anything in.<br>
+  Your data never leaves your computer.
+</p>
 
-![The HomeStock pantry window](docs/img/pantry-window.png)
+---
 
 - [Why this one works when pantry apps don't](#why-this-one-works-when-pantry-apps-dont)
 - [Install](#install) · [Connect it to your AI](#connect-it-to-your-ai) · [First run](#first-run)
@@ -31,6 +36,11 @@ drink, but how often you rebuy it says exactly that.**
 ## Install
 
 ### The Mac app
+
+![The pantry window](docs/img/pantry-window.png)
+
+*The same view in a browser. The Mac app puts this in a real window with a
+sidebar, a chat that can read your kitchen, and drag-and-drop for receipts.*
 
 Download the latest **HomeStock.dmg** from the
 [Releases page](https://github.com/Thomaspeel6/HomeStock/releases), open it and

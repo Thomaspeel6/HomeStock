@@ -106,6 +106,11 @@ struct ToolCall: Decodable, Hashable {
     var wrote: Bool
 }
 
+struct ReadResult: Decodable {
+    var read: Int
+    var reply: String
+}
+
 struct ChatReply: Decodable {
     var reply: String
     var toolCalls: [ToolCall]
