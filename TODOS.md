@@ -29,6 +29,31 @@ https://py.sdk.modelcontextprotocol.io/v2/migration/
 **Effort:** M. **Depends on:** nothing — but it wants its own PR and a full CI run, since the
 MCP surface assertion in `ci.yml` is the only thing proving the tool surface survived.
 
+## P1 — Port the engine to TypeScript
+**What:** Move the whole engine — migrations, estimate maths, confidence, idempotency, the
+chat layer and the local HTTP server — from Python to TypeScript. The Mac app then bundles
+Node instead of Python, and the MCP server ships as `npx homestock-mcp`.
+**Why:** Every packaging problem this project has hit was Python distribution, not Python.
+macOS ships 3.9 and the engine needs 3.11+; `pydantic_core` is a compiled extension whose
+wheel is built per interpreter version, which is what made the app bundle 50MB and what caused
+the 2026-09-12 launch bug; the `mcp` 2.x bump breaks at import. `node:sqlite` is built into
+Node 22.5+ (verified on Node 24), so a TS port has **zero native dependencies** and that whole
+class of bug disappears. MCP's TypeScript SDK is also the reference implementation and has the
+better-trodden path for the remote-HTTP transport the Claude connector needs.
+**Context:** Decided 2026-09-12. It is all-or-nothing: porting only the tool surface would
+leave the arithmetic in Python and the tools in TS — two implementations of the same maths,
+which is the bug fixed twice already (the browser recomputing the repurchase cycle, and a third
+copy of the threshold in CSS) and what non-negotiable 1 in CLAUDE.md forbids.
+The **105 tests are the specification**: they are written as behaviours ("a crash mid-rebuild
+leaves the database recoverable", "the cookie value is not accepted as the write header"), so
+porting against them is far safer than a blind rewrite. Do not lose the subtle work: migration
+atomicity under BEGIN IMMEDIATE, the pairing lock, the Host allowlist, chat write-undo.
+**Context for the app:** the Swift UI talks only to the local HTTP JSON API, so it is
+unaffected as long as the port keeps that contract. Keep `/api/state`, `/api/action`,
+`/api/capture`, `/api/chat`, `/api/models`, `/api/providers`, `/api/pairing`, `/api/undo` and
+the handshake line identical.
+**Effort:** XL — the largest single piece of work proposed so far, bigger than the Mac app.
+
 ## P1 — Sparkle auto-update for the Mac app
 **What:** Wire Sparkle into HomeStock.app so installed copies update themselves, and have
 `scripts/release.sh` sign each DMG and regenerate `appcast.xml`.

@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 
 struct ChatView: View {
@@ -9,6 +10,7 @@ struct ChatView: View {
     @State private var messages: [Message] = []
     @State private var draft = ""
     @State private var thinking = false
+    @FocusState private var composerFocused: Bool
 
     private var provider: Provider? {
         backend.providers.first { $0.id == providerID } ?? backend.providers.first
@@ -20,8 +22,9 @@ struct ChatView: View {
             Divider()
             composer
         }
+        .onAppear { composerFocused = true }
         .navigationTitle("Chat")
-        .navigationSubtitle(provider.map { $0.leavesMachine ? $0.label : "\($0.label) · nothing leaves this Mac" } ?? "")
+        .navigationSubtitle(subtitle)
         .toolbar {
             ToolbarItem(placement: .primaryAction) {
                 Picker("Model provider", selection: $providerID) {
@@ -32,7 +35,22 @@ struct ChatView: View {
                 .pickerStyle(.menu)
                 .labelsHidden()
             }
+            ToolbarItem(placement: .primaryAction) {
+                Button { messages.removeAll() } label: {
+                    Label("Clear conversation", systemImage: "trash")
+                }
+                .disabled(messages.isEmpty)
+                .help("Clear conversation")
+            }
         }
+    }
+
+    private var subtitle: String {
+        guard let provider else { return "" }
+        var parts = [provider.leavesMachine ? provider.label
+                                            : "\(provider.label) · nothing leaves this Mac"]
+        if !allowWrites { parts.append("read-only") }
+        return parts.joined(separator: " · ")
     }
 
     private var intro: some View {
@@ -79,8 +97,9 @@ struct ChatView: View {
         HStack(spacing: 10) {
             TextField("Ask about your kitchen…", text: $draft, axis: .vertical)
                 .textFieldStyle(.plain)
-                .lineLimit(1...5)
+                .lineLimit(1...6)
                 .onSubmit(send)
+                .focused($composerFocused)
             Button(action: send) {
                 Image(systemName: "arrow.up.circle.fill").font(.title2)
             }
@@ -136,10 +155,18 @@ struct MessageRow: View {
             }
         case .assistant:
             VStack(alignment: .leading, spacing: 7) {
+                // fallthrough to the body below
                 // Same promise the pantry window makes about every number it
                 // prints: you can see what it looked at to get here.
                 if !message.toolCalls.isEmpty { ToolCallStrip(calls: message.toolCalls) }
-                Text(message.text).textSelection(.enabled)
+                Text(message.text)
+                    .textSelection(.enabled)
+                    .contextMenu {
+                        Button("Copy") {
+                            NSPasteboard.general.clearContents()
+                            NSPasteboard.general.setString(message.text, forType: .string)
+                        }
+                    }
                 // A small model asked a read-only question will still sometimes
                 // reach for a destructive tool, so anything a turn wrote can be
                 // withdrawn in one click.

@@ -13,7 +13,17 @@ struct ItemListView: View {
 
     var body: some View {
         Group {
-            if items.isEmpty {
+            if items.isEmpty && noHistory {
+                ContentUnavailableView {
+                    Label("No receipts read yet", systemImage: "tray")
+                } description: {
+                    Text("HomeStock works out your kitchen from what you actually buy. "
+                         + "Add a receipt, or ask your agent to read your email.")
+                } actions: {
+                    Button("Add something") { openAdd() }
+                        .buttonStyle(.borderedProminent)
+                }
+            } else if items.isEmpty {
                 ContentUnavailableView(empty, systemImage: emptySymbol)
             } else {
                 List {
@@ -38,9 +48,17 @@ struct ItemListView: View {
         .safeAreaInset(edge: .bottom) { quickAdd }
     }
 
+    private var noHistory: Bool { (backend.state?.health.receiptLines ?? 0) == 0 }
+
+    private func openAdd() {
+        NotificationCenter.default.post(name: .showAddPane, object: nil)
+    }
+
     private var subtitle: String {
         guard let h = backend.state?.health else { return "" }
-        return "\(h.items) items · \(h.receiptLines) receipt lines"
+        let items = h.items == 1 ? "1 item" : "\(h.items) items"
+        let lines = h.receiptLines == 1 ? "1 receipt line" : "\(h.receiptLines) receipt lines"
+        return "\(items) · \(lines)"
     }
 
     private var actions: [(String, String)] {
@@ -146,9 +164,17 @@ struct HouseView: View {
     @Environment(Backend.self) private var backend
     let items: [Item]
     @State private var order = [KeyPathComparator(\Item.name)]
+    @State private var query = ""
+
+    private var shown: [Item] {
+        let matched = query.isEmpty ? items : items.filter {
+            $0.name.localizedCaseInsensitiveContains(query)
+        }
+        return matched.sorted(using: order)
+    }
 
     var body: some View {
-        Table(items.sorted(using: order), sortOrder: $order) {
+        Table(shown, sortOrder: $order) {
             TableColumn("Item", value: \.name) { item in
                 Text(item.name).font(.body.weight(.medium))
             }
@@ -180,7 +206,15 @@ struct HouseView: View {
             }
             .width(min: 150, ideal: 160)
         }
+        .searchable(text: $query, placement: .toolbar, prompt: "Find an item")
+        .overlay {
+            if shown.isEmpty && !query.isEmpty {
+                ContentUnavailableView.search(text: query)
+            }
+        }
         .navigationTitle("In the house")
-        .navigationSubtitle("\(items.count) items · estimates, not facts")
+        .navigationSubtitle(query.isEmpty
+            ? "\(items.count) items · estimates, not facts"
+            : "\(shown.count) of \(items.count)")
     }
 }
