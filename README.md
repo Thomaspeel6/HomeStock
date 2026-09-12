@@ -30,6 +30,23 @@ drink, but how often you rebuy it says exactly that.**
 
 ## Install
 
+### The Mac app
+
+Download the latest **HomeStock.dmg** from the
+[Releases page](https://github.com/Thomaspeel6/HomeStock/releases), open it and
+drag **HomeStock** into Applications. It carries its own Python, so there is
+nothing else to install.
+
+**First launch, once.** HomeStock is a free indie app and isn't notarised by
+Apple, so Gatekeeper blocks the *first* open. **Right-click** HomeStock →
+**Open** → **Open** again. A plain double-click won't offer the Open button.
+Still blocked? **System Settings → Privacy & Security** → **Open Anyway**.
+You only do this once.
+
+### The MCP server, from source
+
+For agents, or if you'd rather run the engine yourself.
+
 **You need:** a Mac or Linux machine, Python 3.11 or newer, and a terminal.
 Windows isn't supported yet ([why](TODOS.md)).
 

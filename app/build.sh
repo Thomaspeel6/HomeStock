@@ -9,7 +9,8 @@ cd "$(dirname "$0")"
 
 CONFIG="${1:-release}"
 APP="build/HomeStock.app"
-VERSION="$(grep -m1 '^version = ' ../pyproject.toml | cut -d'"' -f2)"
+VERSION="${HOMESTOCK_VERSION:-$(grep -m1 '^version = ' ../pyproject.toml | cut -d'"' -f2)}"
+BUILD="${HOMESTOCK_BUILD:-1}"
 PYTHON_VERSION="3.12.12"
 
 swift build -c "$CONFIG" --disable-sandbox
@@ -50,7 +51,7 @@ cat > "$APP/Contents/Info.plist" <<PLIST
   <key>CFBundleExecutable</key><string>HomeStock</string>
   <key>CFBundlePackageType</key><string>APPL</string>
   <key>CFBundleShortVersionString</key><string>$VERSION</string>
-  <key>CFBundleVersion</key><string>$VERSION</string>
+  <key>CFBundleVersion</key><string>$BUILD</string>
   <key>LSMinimumSystemVersion</key><string>14.0</string>
   <key>NSHighResolutionCapable</key><true/>
   <key>NSHumanReadableCopyright</key><string>Copyright 2026 Thomas Peel. FSL-1.1-MIT.</string>

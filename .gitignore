@@ -19,3 +19,5 @@ build/
 # Swift build products and the assembled .app (85MB: it carries its own runtime)
 app/.build/
 app/build/
+dist/
+.sparkle-tools/
