@@ -4,8 +4,11 @@ Local-first household inventory. Reads shopping receipt emails and keeps a live
 estimate of what's in a home — what you have, what's running low, what's about
 to go off. No manual entry, no cloud, no accounts. One SQLite file the user owns.
 
-Two surfaces over the same file: a **pantry window** for people
-(`homestock/ui.py`) and an **MCP server** for agents (`homestock/server.py`).
+Three surfaces over the same file: a **Mac app** (`app/`, SwiftUI), the
+**pantry window** it and a browser share (`homestock/ui.py`), and an **MCP
+server** for agents (`homestock/server.py`). The Swift app owns no logic — it
+spawns the Python engine and renders what it returns, because two
+implementations of the arithmetic would let the app and an agent disagree.
 
 **Read before making product or architecture decisions:**
 [PRD-HomeStock-v3.md](PRD-HomeStock-v3.md) (current — the app),
@@ -23,10 +26,15 @@ built** — installation still needs a terminal.
 ## Architecture
 
 ```
-homestock.db  (SQLite, WAL)  <--  homestock/server.py   19 tools + 2 prompts
-                                                        + recipe resources, stdio
+                             <--  homestock/server.py   19 tools + 2 prompts
+homestock.db  (SQLite, WAL)                             + recipe resources, stdio
                              <--  homestock/ui.py       local HTTP + capture
-                                                        127.0.0.1, or LAN if asked
+                                    |                   127.0.0.1, or LAN if asked
+                                    +-- homestock/chat.py   the only outbound calls
+                                    |
+                             <--  app/  HomeStock.app  (SwiftUI; spawns the engine
+                                                        on a loopback port and
+                                                        talks to that HTTP API)
 ```
 
 Two processes writing one file is the intended topology. WAL + `busy_timeout`
@@ -56,8 +64,14 @@ makes writers queue instead of erroring — see `test_two_process_concurrent_wri
 2. **Never ask the user to inventory anything.** Stock is inferred from
    purchases; corrections are optional and always one tap.
 3. **Uncertainty is data, not failure.** Show the reasoning behind every number.
-4. **Nothing leaves the machine.** No telemetry, no accounts, no outbound calls.
-   `get_health()` returns counts and dates only — never item names.
+4. **Nothing leaves the machine unless the user asked for it.** No telemetry,
+   no accounts, no outbound calls — with exactly one exception, `homestock/chat.py`,
+   which talks to a model provider the user configured. With no provider
+   configured nothing leaves, and that must stay true. Every provider declares
+   `leaves_machine`, and the settings screen states it per provider in plain
+   words; a provider added without that declaration is a bug. The inventory
+   database is never uploaded — only the user's messages and whatever the model
+   asks for via tools. `get_health()` returns counts and dates only — never item names.
    LAN mode (`--lan`) is opt-in and never the default: it is the one place
    where a mistake exposes a household to its own network. Unpaired devices
    read nothing; pairing codes expire and burn after five wrong guesses (only

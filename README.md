@@ -272,4 +272,9 @@ part that compounds, and no one else is building it.
 | [SECURITY.md](SECURITY.md) | Threat model and how to report a problem |
 | [CONTRIBUTING.md](CONTRIBUTING.md) | Dev setup and house rules |
 
-MIT licensed. See [LICENSE](LICENSE).
+Source-available under the [Functional Source License](LICENSE) (FSL-1.1-MIT).
+
+Read it, run it, change it, self-host it, contribute to it — all fine. The one
+thing you may not do is ship a commercial product that competes with it. Two
+years after each release, that release becomes plain MIT automatically, so
+nothing here is locked away forever.
