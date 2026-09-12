@@ -420,6 +420,15 @@ def _item_stats(conn: sqlite3.Connection, name: str) -> dict | None:
             date.fromisoformat(dates[-1]) + timedelta(days=row["shelf_life_days"])
         ).isoformat()
 
+    # Where this item sits in its own repurchase cycle, and how many days past
+    # due it is. Derived, but derived *here*: the window used to recompute both
+    # in JavaScript, which meant the pantry page and an agent could quote
+    # different numbers for the same item, and only one copy had tests.
+    cycle_position = days_over = None
+    if median_interval and days_since_observation is not None:
+        cycle_position = round(days_since_observation / median_interval, 3)
+        days_over = days_since_observation - round(median_interval)
+
     return {
         "name": name,
         "category": row["category"],
@@ -429,6 +438,8 @@ def _item_stats(conn: sqlite3.Connection, name: str) -> dict | None:
         "interval_variation": cv,
         "days_since_last_purchase": days_since,
         "days_since_observation": days_since_observation,
+        "cycle_position": cycle_position,
+        "days_over": days_over,
         "median_interval_days": median_interval,
         "purchases_observed": purchases,
         "last_quantity": last["quantity"] if last else None,

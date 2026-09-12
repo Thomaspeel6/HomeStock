@@ -190,161 +190,267 @@ def save_photo(data_url: str) -> tuple[str | None, str | None]:
 # Colour is spent only on what needs attention. Something that is simply fine
 # gets no marker at all — no dot, no tint — so the eye lands on the two rows
 # that actually want acting on rather than sweeping twenty identical chips.
+# A jar with a fill line, not a shelf of tiny objects: at 26px anything with
+# six strokes turns to mush, and "how much is left" is the whole product.
+MARK = """<svg class="mark" viewBox="0 0 24 24" aria-hidden="true" fill="none"
+ stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">
+ <path d="M8.5 2.2h7"/>
+ <path d="M7 5.8h10a3 3 0 0 1 3 3v9a3.4 3.4 0 0 1-3.4 3.4H7.4A3.4 3.4 0 0 1 4 17.8v-9a3 3 0 0 1 3-3Z"/>
+ <path d="M4.2 13.4h15.6"/></svg>"""
+
+# Shared by all three pages. esc() is in here rather than in PAGE alone because
+# the capture page interpolates user text too, and a page that forgot it would
+# fail silently rather than loudly.
+HELPERS = """
+const esc = s => String(s).replace(/[&<>"']/g, c =>
+  ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+const api = (path, body) => fetch(path, {
+  method: "POST",
+  headers: {"content-type": "application/json", "x-homestock-token": window.HS_TOKEN || ""},
+  body: JSON.stringify(body),
+});
+const plural = (n, one, many) => `${n} ${n === 1 ? one : many}`;
+"""
+
+# No webfont, no remote asset of any kind: a request to a font CDN would leak
+# that this household runs HomeStock, from a product whose headline claim is
+# that nothing leaves the machine. The character comes from the treatment.
+#
+# A pantry is still a ledger — figures are monospaced and tabular, and colour is
+# spent only where something wants acting on. What changed is that the ledger
+# now sits on real surfaces instead of on bare paper: each list is a card with a
+# hairline edge, the masthead carries a mark, and the gauge showing where an
+# item sits in its repurchase cycle is legible at a glance rather than a 3px
+# hairline. Quiet, but built rather than defaulted.
 CSS = """
 :root {
-  --paper:#f4f5f2; --surface:#fbfcfa; --ink:#191d1a; --muted:#626b64;
-  --rule:#dfe3dc; --hair:#ebeee8; --track:#dce1d8;
-  --alert:#9c3a26; --warn:#8a6110; --link:#2b5443;
+  --bg:#f4f6f3; --surface:#fff; --sunk:#eef1ec;
+  --ink:#12100e; --muted:#5d6862; --faint:#8b958e;
+  --line:#e2e7de; --hair:#edf0ea; --track:#dee4d8;
+  --accent:#2c6a50; --accent-ink:#fff; --accent-wash:#eaf3ee;
+  --alert:#a4341c; --alert-wash:#fbeeea; --warn:#8a5a06; --warn-wash:#fbf2e2;
+  --shadow:0 1px 2px rgba(18,30,22,.05), 0 8px 24px -12px rgba(18,30,22,.14);
+  --radius:14px;
   --sans:-apple-system,BlinkMacSystemFont,"Segoe UI",system-ui,sans-serif;
   --mono:ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,monospace;
 }
 @media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) {
-  --paper:#121513; --surface:#191d1a; --ink:#e7eae5; --muted:#939c95;
-  --rule:#272d28; --hair:#1e231f; --track:#2b322c;
-  --alert:#df8b74; --warn:#d6a74e; --link:#84bda1;
+  --bg:#0d100e; --surface:#171b18; --sunk:#121614;
+  --ink:#e9ece7; --muted:#98a29a; --faint:#78827b;
+  --line:#252b27; --hair:#1e231f; --track:#2b322c;
+  --accent:#6cbf96; --accent-ink:#0d100e; --accent-wash:#17251d;
+  --alert:#ef9377; --alert-wash:#2a1a15; --warn:#dcae57; --warn-wash:#261f10;
+  --shadow:0 1px 2px rgba(0,0,0,.4), 0 10px 28px -14px rgba(0,0,0,.7);
 } }
 :root[data-theme="dark"] {
-  --paper:#121513; --surface:#191d1a; --ink:#e7eae5; --muted:#939c95;
-  --rule:#272d28; --hair:#1e231f; --track:#2b322c;
-  --alert:#df8b74; --warn:#d6a74e; --link:#84bda1;
+  --bg:#0d100e; --surface:#171b18; --sunk:#121614;
+  --ink:#e9ece7; --muted:#98a29a; --faint:#78827b;
+  --line:#252b27; --hair:#1e231f; --track:#2b322c;
+  --accent:#6cbf96; --accent-ink:#0d100e; --accent-wash:#17251d;
+  --alert:#ef9377; --alert-wash:#2a1a15; --warn:#dcae57; --warn-wash:#261f10;
+  --shadow:0 1px 2px rgba(0,0,0,.4), 0 10px 28px -14px rgba(0,0,0,.7);
 }
 * { box-sizing:border-box; }
 body {
-  background:var(--paper); color:var(--ink); font:16px/1.5 var(--sans);
-  margin:0 auto; max-width:720px; padding:0 20px; padding-block:40px 56px;
-  font-variant-numeric:tabular-nums;
+  background:var(--bg); color:var(--ink); font:16px/1.55 var(--sans);
+  margin:0 auto; max-width:780px; padding-inline:20px; padding-block:28px 64px;
+  font-variant-numeric:tabular-nums; -webkit-font-smoothing:antialiased;
 }
-h1 { font-size:1.45rem; font-weight:600; letter-spacing:-.022em; margin:0 0 6px; }
-.meta { font:.76rem/1.5 var(--mono); color:var(--muted); margin:0; letter-spacing:.01em; }
+.vh { position:absolute; width:1px; height:1px; overflow:hidden;
+      clip-path:inset(50%); white-space:nowrap; }
 
-/* Sections are ruled, not boxed: the label sits on the rule like a ledger head. */
-h2 {
-  display:flex; align-items:center; gap:12px; margin:38px 0 2px;
-  font:500 .7rem/1 var(--mono); letter-spacing:.14em; text-transform:uppercase;
+/* Masthead ---------------------------------------------------------------- */
+.top { display:flex; align-items:center; gap:10px; margin-bottom:30px; }
+.mark { width:26px; height:26px; color:var(--accent); flex:none; }
+.brand { font-size:.95rem; font-weight:600; letter-spacing:-.01em; margin:0; }
+.top .spacer { flex:1; }
+.chip {
+  font:.72rem/1 var(--mono); color:var(--muted); background:var(--surface);
+  border:1px solid var(--line); border-radius:999px; padding:6px 11px;
+  letter-spacing:.01em; white-space:nowrap;
+}
+h1 { font-size:2rem; font-weight:640; letter-spacing:-.03em; margin:0 0 5px; line-height:1.15; }
+.meta { font:.8rem/1.5 var(--mono); color:var(--muted); margin:0 0 26px; letter-spacing:.01em; }
+
+/* Cards ------------------------------------------------------------------- */
+.card {
+  background:var(--surface); border:1px solid var(--line); border-radius:var(--radius);
+  box-shadow:var(--shadow); margin-bottom:18px; overflow:hidden;
+}
+.card > h2 {
+  display:flex; align-items:center; gap:10px; margin:0;
+  padding:14px 18px 12px; border-bottom:1px solid var(--hair);
+  font:600 .74rem/1 var(--mono); letter-spacing:.13em; text-transform:uppercase;
   color:var(--muted);
 }
-h2::after { content:""; flex:1; height:1px; background:var(--rule); }
+.card > h2 .n {
+  margin-left:auto; font-size:.72rem; letter-spacing:.04em; color:var(--faint);
+  background:var(--sunk); border-radius:999px; padding:4px 9px; text-transform:none;
+}
+.card.attn { border-color:color-mix(in srgb, var(--alert) 34%, var(--line)); }
+.card.attn > h2 { color:var(--alert); background:var(--alert-wash); border-bottom-color:transparent; }
+.card.soon > h2 { color:var(--warn); background:var(--warn-wash); border-bottom-color:transparent; }
 
+/* Rows -------------------------------------------------------------------- */
 .item {
-  display:grid; padding:11px 0; border-top:1px solid var(--hair);
+  display:grid; padding:13px 18px; border-top:1px solid var(--hair);
   grid-template-columns:minmax(0,1fr) auto;
   grid-template-areas:"nm fig" "sub fig" "gauge gauge" "acts acts";
   column-gap:16px; align-items:center;
 }
 .item:first-child { border-top:0; }
-@media (min-width:560px) {
+@media (min-width:600px) {
   .item {
-    grid-template-columns:minmax(0,1fr) auto auto auto;
+    grid-template-columns:minmax(0,1fr) 96px auto auto;
     grid-template-areas:"nm gauge fig acts" "sub gauge fig acts";
-    column-gap:20px;
+    column-gap:18px;
   }
 }
-.nm { grid-area:nm; font-size:1rem; font-weight:550; min-width:0; overflow-wrap:anywhere;
-      align-self:end; }
-.sub { grid-area:sub; font:.75rem/1.4 var(--mono); color:var(--muted); letter-spacing:.01em;
-       align-self:start; }
+.nm { grid-area:nm; font-size:1rem; font-weight:560; min-width:0;
+      overflow-wrap:anywhere; align-self:end; letter-spacing:-.006em; }
+.sub { grid-area:sub; font:.76rem/1.45 var(--mono); color:var(--muted);
+       letter-spacing:.01em; align-self:start; }
 
-/* Where you are in this item's own repurchase cycle. The track is one and a
-   half cycles, so the notch at two thirds is "due" and overshoot is visible
-   rather than merely asserted. */
-.gauge { grid-area:gauge; width:104px; max-width:100%; height:3px;
-         background:var(--track); position:relative; margin:8px 0 2px; }
-@media (min-width:560px) { .gauge { margin:0; } }
-.gauge b { position:absolute; left:0; top:0; bottom:0; background:var(--muted);
-           width:calc(min(var(--p), 1.5) / 1.5 * 100%); }
+/* Where this item sits in its own repurchase cycle. The track runs to one and
+   a half cycles, so the notch at two thirds is "due" and overshoot is visible
+   past it rather than merely asserted. --p and the notch share one variable,
+   so the mark cannot drift away from the scale it labels. */
+.gauge {
+  grid-area:gauge; --cycles:1.5; width:96px; max-width:100%; height:6px;
+  background:var(--track); border-radius:999px; position:relative;
+  margin:10px 0 3px; overflow:hidden;
+}
+@media (min-width:600px) { .gauge { margin:0; } }
+.gauge b {
+  position:absolute; inset:0 auto 0 0; border-radius:999px; background:var(--muted);
+  width:calc(min(var(--p), var(--cycles)) / var(--cycles) * 100%);
+  transition:width .25s ease;
+}
 .gauge.over b { background:var(--alert); }
-.gauge::after { content:""; position:absolute; left:66.667%; top:-3px; bottom:-3px;
-                width:1px; background:var(--ink); opacity:.3; }
-
-.fig { grid-area:fig; font:.76rem/1 var(--mono); color:var(--muted); letter-spacing:.02em;
-       white-space:nowrap; text-align:right; min-width:3.6em; }
+.gauge::after {
+  content:""; position:absolute; top:0; bottom:0; width:2px; border-radius:1px;
+  left:calc(100% / var(--cycles)); background:var(--surface); opacity:.9;
+}
+.fig {
+  grid-area:fig; font:600 .78rem/1 var(--mono); color:var(--muted);
+  letter-spacing:.02em; white-space:nowrap; text-align:right; min-width:3.8em;
+}
 .fig.over { color:var(--alert); }
 .fig.soon { color:var(--warn); }
 
-.acts { grid-area:acts; display:flex; gap:14px; margin-top:5px; }
-@media (min-width:560px) { .acts { margin:0; justify-content:flex-end; } }
+.acts { grid-area:acts; display:flex; gap:7px; margin-top:9px; }
+@media (min-width:600px) { .acts { margin:0; justify-content:flex-end; } }
 .acts button {
-  font:.82rem/1.3 var(--sans); color:var(--link); background:none; border:0; padding:2px 0;
-  cursor:pointer; text-decoration:underline; text-decoration-thickness:1px;
-  text-underline-offset:3px; text-decoration-color:color-mix(in srgb, var(--link) 32%, transparent);
+  font:500 .8rem/1 var(--sans); color:var(--muted); background:var(--surface);
+  border:1px solid var(--line); border-radius:999px; padding:7px 12px; cursor:pointer;
+  white-space:nowrap; transition:color .12s, border-color .12s, background .12s;
 }
-.acts button:hover { text-decoration-color:currentColor; }
-.acts button:focus-visible { outline:2px solid var(--link); outline-offset:3px; border-radius:2px; }
-.acts button:disabled { color:var(--muted); cursor:default; text-decoration:none; }
-
-/* Reference, not a to-do list: quiet, dense, two columns when there is room,
-   and the controls stay out of the way until you reach for them. */
-.house { display:grid; grid-template-columns:minmax(0,1fr); column-gap:40px; }
-@media (min-width:620px) { .house { grid-template-columns:repeat(2,minmax(0,1fr)); } }
-.house .item { padding:8px 0; grid-template-columns:minmax(0,1fr) auto;
-               grid-template-areas:"nm fig" "acts acts"; }
-.house .nm { font-size:.94rem; font-weight:500; align-self:center; }
-.house .sub { display:none; }
-.house .acts { margin-top:2px; justify-content:flex-start; }
-@media (hover:hover) and (min-width:620px) {
-  .house .acts { opacity:0; transition:opacity .12s; }
-  .house .item:hover .acts, .house .item:focus-within .acts { opacity:1; }
-}
+.acts button:hover { color:var(--accent); border-color:var(--accent); background:var(--accent-wash); }
+.acts button:focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
+.acts button:disabled { opacity:.45; cursor:default; }
 .unsure .nm { color:var(--muted); }
 
-.empty { color:var(--muted); font-size:.92rem; padding:14px 0 4px; margin:0; }
+/* "In the house" is reference, not a to-do list: dense, quiet, two columns
+   when there is room, controls out of the way until reached for. */
+.house { display:grid; grid-template-columns:minmax(0,1fr); }
+@media (min-width:620px) {
+  .house { grid-template-columns:repeat(2,minmax(0,1fr)); }
+  .house .item:nth-child(2) { border-top:0; }
+  .house .item:nth-child(odd) { border-right:1px solid var(--hair); }
+}
+.house .item { padding:9px 18px 10px; grid-template-columns:minmax(0,1fr) auto;
+               grid-template-areas:"nm fig" "acts acts"; }
+.house .nm { font-size:.95rem; font-weight:500; align-self:center; }
+.house .sub { display:none; }
+.house .acts { margin-top:4px; justify-content:flex-start; }
+.house .acts button { padding:5px 10px; font-size:.76rem; }
+@media (hover:hover) and (min-width:620px) {
+  .house .acts { opacity:0; transition:opacity .13s; }
+  .house .item:hover .acts, .house .item:focus-within .acts { opacity:1; }
+}
+.empty { color:var(--muted); font-size:.93rem; padding:20px 18px; margin:0; }
 
 /* Louder than any estimate on the page, because a silent ingestion failure
    looks exactly like a quiet week. */
-.stale { border-left:3px solid var(--alert); padding:2px 0 2px 14px; margin:26px 0 0; }
-.stale strong { display:block; font-size:.95rem; }
-.stale span { font:.8rem/1.5 var(--mono); color:var(--muted); }
-
-.add { margin-top:14px; }
-.add input {
-  font:1rem/1.5 var(--sans); width:100%; padding:9px 0; color:var(--ink);
-  background:none; border:0; border-bottom:1px solid var(--rule);
+.stale {
+  display:flex; gap:12px; align-items:flex-start; background:var(--alert-wash);
+  border:1px solid color-mix(in srgb, var(--alert) 30%, transparent);
+  border-radius:var(--radius); padding:14px 16px; margin:0 0 18px;
 }
-.add input:focus { outline:0; border-bottom-color:var(--link); }
-.hint { font:.76rem/1.5 var(--mono); color:var(--muted); margin:8px 0 0; letter-spacing:.01em; }
-.pair { margin-top:22px; border-left:3px solid var(--link); padding:2px 0 2px 14px; }
-.pair .code { font:600 1.9rem/1.2 var(--mono); letter-spacing:.18em; margin:6px 0; }
+.stale svg { width:18px; height:18px; color:var(--alert); flex:none; margin-top:1px; }
+.stale strong { display:block; font-size:.95rem; }
+.stale span { font:.79rem/1.5 var(--mono); color:var(--muted); }
 
-footer { margin-top:44px; padding-top:16px; border-top:1px solid var(--rule);
-         font:.76rem/1.6 var(--mono); color:var(--muted); letter-spacing:.01em; }
+/* Add + pairing ----------------------------------------------------------- */
+.add { padding:16px 18px 18px; }
+.add input {
+  font:1rem/1.5 var(--sans); width:100%; padding:11px 14px; color:var(--ink);
+  background:var(--sunk); border:1px solid transparent; border-radius:10px;
+}
+.add input:focus { outline:0; border-color:var(--accent); background:var(--surface); }
+.hint { font:.78rem/1.5 var(--mono); color:var(--muted); margin:9px 0 0; letter-spacing:.01em; }
+.lanhint { font:.83rem/1.5 var(--sans); color:var(--faint); letter-spacing:0;
+           margin:0; padding:0 18px 18px; }
+.lanhint code { font-size:.78rem; background:var(--sunk); border-radius:5px; padding:2px 6px; }
+.pair {
+  margin:14px 18px 18px; background:var(--accent-wash); border-radius:12px;
+  padding:14px 16px; border:1px solid color-mix(in srgb, var(--accent) 22%, transparent);
+}
+.pair strong { font-size:.92rem; }
+.pair .code {
+  font:640 2rem/1.2 var(--mono); letter-spacing:.16em; margin:8px 0 4px; color:var(--ink);
+}
+footer {
+  margin-top:30px; font:.78rem/1.6 var(--mono); color:var(--faint); letter-spacing:.01em;
+}
 footer p { margin:0 0 6px; }
-footer .prose { font-family:var(--sans); font-size:.82rem; letter-spacing:0; }
+footer .prose { font-family:var(--sans); font-size:.83rem; letter-spacing:0; }
 code { font-family:var(--mono); word-break:break-all; }
 
-/* Capture: one primary act, two quieter ones. */
-.sheet > * + * { margin-top:22px; }
-.field label { display:block; font:500 .7rem/1 var(--mono); letter-spacing:.14em;
-               text-transform:uppercase; color:var(--muted); margin:0 0 8px; }
+/* Capture / pair sheets --------------------------------------------------- */
+.sheet { background:var(--surface); border:1px solid var(--line); border-radius:var(--radius);
+         box-shadow:var(--shadow); padding:20px; }
+.sheet > * + * { margin-top:20px; }
+.field label { display:block; font:600 .72rem/1 var(--mono); letter-spacing:.13em;
+               text-transform:uppercase; color:var(--muted); margin:0 0 9px; }
 .field input {
-  font:1rem/1.5 var(--sans); width:100%; padding:11px 13px; color:var(--ink);
-  background:var(--surface); border:1px solid var(--rule); border-radius:6px;
+  font:1rem/1.5 var(--sans); width:100%; padding:12px 14px; color:var(--ink);
+  background:var(--sunk); border:1px solid transparent; border-radius:10px;
 }
-.field input:focus { outline:0; border-color:var(--link); }
+.field input:focus { outline:0; border-color:var(--accent); background:var(--surface); }
 .primary {
-  display:block; width:100%; padding:20px; border-radius:8px; cursor:pointer;
-  font:550 1.05rem/1.2 var(--sans); color:var(--paper); background:var(--ink); border:0;
+  display:block; width:100%; padding:18px; border-radius:12px; cursor:pointer;
+  font:600 1.05rem/1.2 var(--sans); color:var(--accent-ink); background:var(--accent); border:0;
 }
+.primary:hover { filter:brightness(1.07); }
 .secondary {
-  display:block; width:100%; padding:12px; border-radius:6px; cursor:pointer; margin-top:8px;
-  font:.9rem/1.2 var(--sans); color:var(--ink); background:none; border:1px solid var(--rule);
+  display:block; width:100%; padding:12px; border-radius:10px; cursor:pointer; margin-top:9px;
+  font:500 .92rem/1.2 var(--sans); color:var(--ink); background:none;
+  border:1px solid var(--line);
 }
-.primary:focus-visible, .secondary:focus-visible { outline:2px solid var(--link); outline-offset:2px; }
+.secondary:hover { border-color:var(--accent); color:var(--accent); }
+.primary:focus-visible, .secondary:focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
 .flash { min-height:1.4em; }
 @media (prefers-reduced-motion:reduce) { * { transition:none !important; } }
 """
 
-PAGE = """<title>HomeStock</title>
-<style>__CSS__</style></head><body>
+_HEAD = """<style>__CSS__</style></head><body>
+<header class="top">__MARK__<p class="brand">HomeStock</p><div class="spacer"></div>__CHIP__</header>
+"""
 
+PAGE = """<title>HomeStock</title>""" + _HEAD.replace(
+    "__CHIP__", '<span class="chip" id="chip">reading&hellip;</span>') + """
 <h1>Your kitchen</h1>
-<p class="meta" id="meta">Reading your receipts&hellip;</p>
+<p class="meta" id="meta">Working out what you have&hellip;</p>
 <div id="app"></div>
 
-<section class="add">
+<section class="card">
   <h2>Add something</h2>
-  <label for="quick" class="sr" hidden>Type what you bought</label>
-  <input type="text" id="quick" placeholder="2 milk, bread, 6 eggs" autocomplete="off">
-  <p class="hint" id="pending">Goes to the inbox for your agent to read.</p>
+  <div class="add">
+    <label for="quick" class="vh">Type what you bought</label>
+    <input type="text" id="quick" placeholder="2 milk, bread, 6 eggs" autocomplete="off">
+    <p class="hint" id="pending">Goes to the inbox for your agent to read.</p>
+  </div>
   <div id="lanbox"></div>
 </section>
 
@@ -355,25 +461,23 @@ PAGE = """<title>HomeStock</title>
 </footer>
 
 <script>
-const TOKEN = "__TOKEN__";
+window.HS_TOKEN = "__TOKEN__";
 const LAN = __LAN__;
+__HELPERS__
 const ACTIONS = {
   buy:   [["have", "Already have it"]],
   soon:  [["out", "Used it"], ["binned", "Binned it"]],
   house: [["have", "Still have it"], ["out", "Out of it"]],
 };
-const esc = s => String(s).replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
-const api = (path, body) => fetch(path, {
-  method: "POST",
-  headers: {"content-type": "application/json", "x-homestock-token": TOKEN},
-  body: JSON.stringify(body),
-});
 
+/* Every number below is read from the server, never recomputed here. The
+   window and an agent asking the same question have to give the same answer,
+   and only the server's copy has tests. */
 function gauge(it) {
-  if (!it.median_interval_days) return "";
-  const p = it.days_since_observation / it.median_interval_days;
-  return `<span class="gauge${p > 1 ? " over" : ""}" style="--p:${p.toFixed(2)}"
-            role="img" aria-label="${Math.round(p * 100)}% through its usual cycle"><b></b></span>`;
+  if (it.cycle_position === null || it.cycle_position === undefined) return "<span></span>";
+  const p = it.cycle_position;
+  return `<span class="gauge${p > 1 ? " over" : ""}" style="--p:${p}" role="img"
+    aria-label="${Math.round(p * 100)}% through its usual cycle"><b></b></span>`;
 }
 
 function item(it, kind) {
@@ -384,10 +488,10 @@ function item(it, kind) {
   } else if (it.confirmed) {
     sub = it.corrected_quantity === 0 ? "you said you were out" : "you confirmed this";
     if (kind === "buy") fig = `<span class="fig over">now</span>`;
-  } else if (it.median_interval_days) {
+  } else if (it.days_over !== null && it.days_over !== undefined) {
     sub = `every ${Math.round(it.median_interval_days)}d, last ${it.days_since_observation}d ago`;
-    const over = it.days_since_observation - Math.round(it.median_interval_days);
-    fig = `<span class="fig${over > 0 ? " over" : ""}">${over > 0 ? "+" + over + "d" : "in " + -over + "d"}</span>`;
+    fig = `<span class="fig${it.days_over > 0 ? " over" : ""}">${
+      it.days_over > 0 ? "+" + it.days_over + "d" : "in " + -it.days_over + "d"}</span>`;
   } else {
     sub = `bought once, ${it.days_since_last_purchase}d ago`;
     cls = " unsure";
@@ -401,31 +505,40 @@ function item(it, kind) {
   </div>`;
 }
 
-function section(title, rows, kind, empty, wrap) {
+function card(title, rows, kind, empty, tone) {
   const body = rows.length ? rows.map(r => item(r, kind)).join("")
                            : `<p class="empty">${empty}</p>`;
-  return `<h2>${title}</h2><div class="${wrap || ""}">${body}</div>`;
+  const count = rows.length ? `<span class="n">${rows.length}</span>` : "";
+  const cls = rows.length && tone ? ` ${tone}` : "";
+  return `<section class="card${cls}"><h2>${title}${count}</h2>
+    <div class="${kind === "house" ? "house" : ""}">${body}</div></section>`;
 }
+
+const WARN_ICON = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+  stroke-linecap="round"><path d="M12 8v5"/><path d="M12 17h.01"/>
+  <path d="M10.3 3.9 2 18a2 2 0 0 0 1.7 3h16.6a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0Z"/></svg>`;
 
 async function render() {
   const s = await (await fetch("/api/state")).json();
   const h = s.health;
   let html = "";
   if (h.stale) {
-    html += `<p class="stale"><strong>Not up to date.</strong><span>` + (h.last_ingest_at
-      ? `no receipts read for ${h.days_since_ingest} days &mdash; estimates below may be stale`
-      : `no receipts read yet &mdash; nothing below is based on much`) + `</span></p>`;
+    html += `<div class="stale">${WARN_ICON}<div><strong>Not up to date.</strong><span>` +
+      (h.last_ingest_at
+        ? `no receipts read for ${h.days_since_ingest} days &mdash; estimates below may be stale`
+        : `no receipts read yet &mdash; nothing below is based on much`) + `</span></div></div>`;
   }
-  html += section("Buy these", s.order, "buy", "Nothing looks due.");
-  html += section("Use soon", s.expiring, "soon", "Nothing about to go off.");
-  html += section("In the house", s.shelf, "house", "No history yet.", "house");
+  html += card("Buy these", s.order, "buy", "Nothing looks due.", "attn");
+  html += card("Use soon", s.expiring, "soon", "Nothing about to go off.", "soon");
+  html += card("In the house", s.shelf, "house", "No history yet.");
   document.getElementById("app").innerHTML = html;
 
+  document.getElementById("chip").textContent = plural(h.items, "item", "items");
   document.getElementById("meta").textContent =
-    `${h.items} items · ${h.receipt_lines} receipt lines`
-    + (h.last_ingest_at ? ` · last read ${h.last_ingest_at.slice(0, 16)}` : "");
+    `${plural(h.receipt_lines, "receipt line", "receipt lines")}`
+    + (h.last_ingest_at ? ` · last read ${h.last_ingest_at.slice(0, 16)}` : " · nothing read yet");
   document.getElementById("pending").textContent = s.pending_captures
-    ? `${s.pending_captures} waiting to be read.`
+    ? `${plural(s.pending_captures, "capture", "captures")} waiting to be read.`
     : "Goes to the inbox for your agent to read.";
   document.getElementById("foot").innerHTML = `Database: <code>${esc(h.db_path)}</code>`;
 
@@ -446,8 +559,8 @@ document.getElementById("quick").addEventListener("keydown", async e => {
 async function showPairing() {
   const box = document.getElementById("lanbox");
   if (!LAN) {
-    box.innerHTML = `<p class="hint">To send photos from your phone, restart with
-      <code>homestock-ui --lan</code>.</p>`;
+    box.innerHTML = `<p class="lanhint">Want to photograph paper receipts?
+      Restart with <code>homestock-ui --lan</code> to pair your phone.</p>`;
     return;
   }
   const p = await (await fetch("/api/pairing")).json();
@@ -463,11 +576,10 @@ showPairing();
 </script></body>
 """
 
-PAIR_PAGE = """<title>Pair with HomeStock</title>
-<style>__CSS__</style></head><body>
-<h1>HomeStock</h1>
-<p class="meta">Enter the code on your computer to use this phone for capture.</p>
-<div class="sheet" style="margin-top:28px">
+PAIR_PAGE = """<title>Pair with HomeStock</title>""" + _HEAD.replace("__CHIP__", "") + """
+<h1>Pair this phone</h1>
+<p class="meta">Enter the code shown on your computer.</p>
+<div class="sheet">
   <div class="field">
     <label for="code">Pairing code</label>
     <input type="tel" id="code" inputmode="numeric" autocomplete="off" placeholder="000 000">
@@ -491,12 +603,11 @@ go.onclick = async () => {
 </script></body>
 """
 
-CAPTURE_PAGE = """<title>HomeStock - Add</title>
-<style>__CSS__</style></head><body>
+CAPTURE_PAGE = """<title>HomeStock - Add</title>""" + _HEAD.replace("__CHIP__", "") + """
 <h1>Add to your kitchen</h1>
 <p class="meta">Read on your computer. Nothing goes to the internet.</p>
 
-<div class="sheet" style="margin-top:28px">
+<div class="sheet">
   <div>
     <button type="button" class="primary" id="shoot">Photograph a receipt</button>
     <input type="file" id="shot" accept="image/*" capture="environment" hidden>
@@ -520,13 +631,12 @@ CAPTURE_PAGE = """<title>HomeStock - Add</title>
 <footer><p id="recent"></p></footer>
 
 <script>
+window.HS_TOKEN = "__TOKEN__";
+__HELPERS__
 const msg = document.getElementById("msg");
 async function send(body) {
   msg.textContent = "Sending…";
-  const r = await fetch("/api/capture", {
-    method: "POST", headers: {"content-type": "application/json", "x-homestock-token": "__TOKEN__"},
-    body: JSON.stringify(body),
-  });
+  const r = await api("/api/capture", body);
   const b = await r.json().catch(() => ({}));
   msg.textContent = r.ok ? "Added. Your computer will read it shortly."
                          : (b.error || "That did not work.");
@@ -551,6 +661,7 @@ document.getElementById("send").onclick = () => {
 };
 
 // Chrome and recent Safari read a barcode natively; everything else types it.
+const SCAN_TRIES = 200, SCAN_POLL_MS = 100;   // ~20 seconds of looking
 document.getElementById("scan").onclick = async () => {
   if (!("BarcodeDetector" in window)) {
     msg.textContent = "This browser cannot scan — type the number, or photograph the label.";
@@ -562,13 +673,13 @@ document.getElementById("scan").onclick = async () => {
     video.srcObject = stream; video.setAttribute("playsinline", ""); await video.play();
     const det = new BarcodeDetector();
     msg.textContent = "Point at the barcode…";
-    for (let i = 0; i < 200; i++) {
+    for (let i = 0; i < SCAN_TRIES; i++) {
       const found = await det.detect(video).catch(() => []);
       if (found.length) {
         stream.getTracks().forEach(t => t.stop());
         return send({kind: "barcode", text: found[0].rawValue, device: "phone"});
       }
-      await new Promise(r => setTimeout(r, 100));
+      await new Promise(r => setTimeout(r, SCAN_POLL_MS));
     }
     stream.getTracks().forEach(t => t.stop());
     msg.textContent = "Did not find a barcode. Type the number instead.";
@@ -581,7 +692,8 @@ async function recent() {
   const r = await fetch("/api/captures");
   if (!r.ok) return;
   const n = (await r.json()).length;
-  document.getElementById("recent").textContent = n ? `${n} waiting to be read.` : "";
+  document.getElementById("recent").textContent =
+    n ? `${plural(n, "capture", "captures")} waiting to be read.` : "";
 }
 recent();
 </script></body>
@@ -613,7 +725,8 @@ class Handler(BaseHTTPRequestHandler):
         html = ("<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\">"
                 "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">"
                 "<meta name=\"color-scheme\" content=\"light dark\">"
-                + template.replace("__CSS__", CSS).replace("__TOKEN__", TOKEN)
+                + template.replace("__CSS__", CSS).replace("__MARK__", MARK)
+                          .replace("__HELPERS__", HELPERS).replace("__TOKEN__", TOKEN)
                           .replace("__LAN__", "true" if LAN_MODE else "false")
                 + "</html>")
         self._send(200, html.encode(), "text/html; charset=utf-8")

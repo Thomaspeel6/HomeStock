@@ -52,6 +52,18 @@ called out here in capital letters.
 - The wheel now ships `prompts/` and `recipes/`, which it previously did not;
   an installed copy had neither.
 
+### Changed
+
+- **The window was redesigned.** The ledger reading is intact — mono tabular
+  figures, colour only where something needs attention — but it now sits on
+  cards over a tinted ground, with a mark, a clearer repurchase gauge whose
+  "due" notch is derived from the same variable as its scale, and a dark theme
+  that is designed rather than inverted. Still no webfont and no remote asset
+  of any kind.
+- `get_stock()` and `what_should_i_order()` now return `cycle_position` and
+  `days_over`. The window used to recompute both in JavaScript, so the page and
+  an agent could quote different numbers for the same item.
+
 ### Security
 
 - **The pairing cookie is no longer the write token.** They were the same

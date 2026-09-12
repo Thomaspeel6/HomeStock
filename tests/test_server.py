@@ -655,3 +655,29 @@ def test_a_recipe_name_cannot_smuggle_a_newline():
     interpolated into a filesystem path."""
     assert server._RECIPE_NAME.match("tesco\n") is None
     assert server._RECIPE_NAME.match("tesco") is not None
+
+
+def test_the_cycle_numbers_the_window_draws_come_from_the_server():
+    """The pantry window used to recompute these in JavaScript, which meant it
+    and an agent could quote different figures for the same item."""
+    for i, ago in enumerate([21, 14, 7]):      # a 7-day cycle, last bought 7d ago
+        seed_receipt("milk", ago, f"m{i}", unit="l")
+    s = get_stock("milk")
+    assert s["median_interval_days"] == 7
+    assert s["days_since_observation"] == 7
+    assert s["cycle_position"] == 1.0          # exactly due
+    assert s["days_over"] == 0
+
+
+def test_cycle_numbers_are_absent_rather_than_guessed_without_a_cycle():
+    seed_receipt("saffron", 3, "s1")           # one purchase: no interval exists
+    s = get_stock("saffron")
+    assert s["cycle_position"] is None and s["days_over"] is None
+
+
+def test_an_overdue_item_reports_how_overdue_it_is():
+    for i, ago in enumerate([24, 17, 10]):     # 7-day cycle, last bought 10d ago
+        seed_receipt("bread", ago, f"b{i}")
+    s = get_stock("bread")
+    assert s["days_over"] == 3
+    assert round(s["cycle_position"], 2) == round(10 / 7, 2)
