@@ -386,3 +386,22 @@ def test_pairing_endpoint_is_absent_on_loopback(http):
     with pytest.raises(urllib.error.HTTPError) as e:
         get(http, "/api/pairing")
     assert e.value.code == 404
+
+
+def test_a_scanned_pairing_url_carries_the_code(http, from_the_network):
+    """The QR code on the laptop encodes /?code=NNNNNN so the phone pairs by
+    pointing a camera, rather than by someone reading six digits aloud."""
+    code = ui.new_pair_code()
+    body = get(http, f"/?code={code}").read()
+    assert b"Pairing code" in body                 # still the pairing page
+    assert b"URLSearchParams" in body              # and it will use the code
+    assert ui.TOKEN.encode() not in body           # without leaking the write token
+
+
+def test_pairing_by_url_still_goes_through_the_same_check(http, from_the_network):
+    """The QR path must not be a second, weaker door: a wrong code in the URL
+    is refused exactly like a wrong code typed in."""
+    ui.new_pair_code()
+    with pytest.raises(urllib.error.HTTPError) as e:
+        pair(http, "000000" if ui._pair["code"] != "000000" else "111111")
+    assert e.value.code == 403

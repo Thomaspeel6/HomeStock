@@ -180,3 +180,38 @@ def test_the_handshake_tells_the_app_where_the_backend_landed(tmp_path):
     finally:
         proc.send_signal(signal.SIGTERM)
         proc.wait(timeout=10)
+
+
+# --- Model discovery: Settings offers a list rather than a blind text box ----
+
+def test_a_blank_model_is_refused_with_advice_not_a_provider_error():
+    """Ollama has no sane default model — it depends what the user pulled — so
+    an unset model must say what to do rather than 400 from the provider."""
+    with pytest.raises(chat.ChatError, match="Choose a model"):
+        chat.chat([{"role": "user", "content": "hi"}], provider="ollama")
+
+
+def test_list_models_unwraps_both_shapes_providers_use(monkeypatch):
+    monkeypatch.setattr(chat, "_get", lambda url, headers: {
+        "data": [{"id": "gpt-5"}, {"id": "gpt-4.1"}]})
+    assert chat.list_models("openai", api_key="k") == ["gpt-4.1", "gpt-5"]
+
+    monkeypatch.setattr(chat, "_get", lambda url, headers: {
+        "models": [{"name": "llama3.2:3b"}]})
+    assert chat.list_models("ollama") == ["llama3.2:3b"]
+
+
+def test_listing_models_for_a_keyless_cloud_provider_asks_for_nothing(monkeypatch):
+    """No key means no request at all — not a 401 the user has to interpret."""
+    def explode(*a, **k):
+        raise AssertionError("should not have called the provider")
+    monkeypatch.setattr(chat, "_get", explode)
+    assert chat.list_models("openrouter") == []
+    assert chat.list_models("anthropic") == []
+
+
+def test_local_provider_needs_no_key_to_list_models(monkeypatch):
+    called = []
+    monkeypatch.setattr(chat, "_get", lambda url, headers: called.append(headers) or {"models": []})
+    chat.list_models("ollama")
+    assert called and "authorization" not in called[0]

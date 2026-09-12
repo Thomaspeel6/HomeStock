@@ -90,9 +90,10 @@ struct Provider: Decodable, Identifiable, Hashable {
     var leavesMachine: Bool
     var note: String
     var baseUrl: String
+    var hint: String?
 
     enum CodingKeys: String, CodingKey {
-        case id, label, note
+        case id, label, note, hint
         case needsKey = "needs_key"
         case defaultModel = "default_model"
         case leavesMachine = "leaves_machine"

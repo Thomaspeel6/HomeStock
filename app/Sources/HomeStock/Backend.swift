@@ -17,6 +17,9 @@ final class Backend {
     private(set) var state: KitchenState?
     private(set) var providers: [Provider] = []
 
+    private(set) var lanMode = false
+    private(set) var pairing: Pairing?
+
     private var process: Process?
     private var port: Int = 0
     private var token: String = ""
@@ -41,6 +44,40 @@ final class Backend {
         process = nil
     }
 
+    /// Phone capture means binding the network rather than loopback, and the
+    /// listening socket cannot be rebound in place — so the engine is restarted
+    /// with --lan. It is off by default and every launch starts off again:
+    /// leaving a household's shopping exposed on a cafe wifi is the one
+    /// mistake here with real consequences.
+    func setLAN(_ on: Bool) async {
+        guard on != lanMode else { return }
+        stop()
+        lanMode = on
+        pairing = nil
+        status = .starting
+        await start()
+        if on { await loadPairing() }
+    }
+
+    func loadPairing() async {
+        pairing = try? await get("/api/pairing", as: Pairing.self)
+    }
+
+    struct Pairing: Decodable, Equatable {
+        var code: String
+        var url: String
+        var expiresIn: Int
+        enum CodingKeys: String, CodingKey {
+            case code, url
+            case expiresIn = "expires_in"
+        }
+        /// What the QR encodes: the address plus the code, so the phone pairs
+        /// by pointing a camera instead of someone reading six digits out loud.
+        var pairingURL: String {
+            url.hasSuffix("/") ? "\(url)?code=\(code)" : "\(url)/?code=\(code)"
+        }
+    }
+
     private func spawn() async throws {
         guard let python = Self.pythonPath else {
             throw Failure("HomeStock needs Python 3.11 or newer, and could not find it. "
@@ -48,7 +85,9 @@ final class Backend {
         }
         let proc = Process()
         proc.executableURL = URL(fileURLWithPath: python)
-        proc.arguments = ["-m", "homestock.ui_main", "--port", "0", "--handshake"]
+        var args = ["-m", "homestock.ui_main", "--port", "0", "--handshake"]
+        if lanMode { args.append("--lan") }
+        proc.arguments = args
         var env = ProcessInfo.processInfo.environment
         env["PYTHONPATH"] = Self.enginePath
         env["PYTHONUNBUFFERED"] = "1"
@@ -196,6 +235,18 @@ final class Backend {
 
     // MARK: - Actions
 
+    /// Offered in Settings as a list. For Ollama the answer depends on what the
+    /// user has pulled, so no hardcoded default can be right.
+    func models(for provider: Provider, key: String?) async -> [String] {
+        struct Wrapper: Decodable { var models: [String] }
+        var path = "/api/models?provider=\(provider.id)"
+        if let key, !key.isEmpty,
+           let escaped = key.addingPercentEncoding(withAllowedCharacters: .alphanumerics) {
+            path += "&api_key=\(escaped)"
+        }
+        return (try? await get(path, as: Wrapper.self))?.models ?? []
+    }
+
     func refresh() async {
         state = try? await get("/api/state", as: KitchenState.self)
     }
@@ -212,6 +263,27 @@ final class Backend {
 
     func addNote(_ text: String) async {
         _ = try? await post("/api/capture", ["kind": "note", "text": text, "device": "mac"])
+        await refresh()
+    }
+
+    func addBarcode(_ code: String) async throws {
+        _ = try await post("/api/capture", ["kind": "barcode", "text": code, "device": "mac"])
+        await refresh()
+    }
+
+    /// A photographed receipt from the Mac: same inbox the phone writes to, so
+    /// there is one reading path rather than one per device.
+    func addPhoto(_ file: URL) async throws {
+        let data = try Data(contentsOf: file)
+        let mime = switch file.pathExtension.lowercased() {
+            case "png": "image/png"
+            case "webp": "image/webp"
+            case "heic": "image/heic"
+            default: "image/jpeg"
+        }
+        let dataURL = "data:\(mime);base64,\(data.base64EncodedString())"
+        _ = try await post("/api/capture",
+                           ["kind": "receipt_photo", "data_url": dataURL, "device": "mac"])
         await refresh()
     }
 

@@ -31,6 +31,7 @@ import socket
 import sys
 import threading
 import time
+import urllib.parse
 import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -589,17 +590,27 @@ PAIR_PAGE = """<title>Pair with HomeStock</title>""" + _HEAD.replace("__CHIP__",
 </div>
 <script>
 const go = document.getElementById("go");
-go.onclick = async () => {
+const field = document.getElementById("code");
+
+async function attempt(code) {
   go.disabled = true;
   const r = await fetch("/api/pair", {
     method: "POST", headers: {"content-type": "application/json"},
-    body: JSON.stringify({code: document.getElementById("code").value}),
+    body: JSON.stringify({code}),
   });
   if (r.ok) { location.href = "/capture"; return; }
   const b = await r.json().catch(() => ({}));
   document.getElementById("err").textContent = b.error || "That code did not work.";
   go.disabled = false;
-};
+}
+
+go.onclick = () => attempt(field.value);
+field.addEventListener("keydown", e => { if (e.key === "Enter") attempt(field.value); });
+
+// Arrived by scanning the QR code on the laptop: the code is already in the
+// URL, so pair without making anyone read six digits off a screen.
+const fromQR = new URLSearchParams(location.search).get("code");
+if (fromQR) { field.value = fromQR; attempt(fromQR); }
 </script></body>
 """
 
@@ -808,6 +819,16 @@ class Handler(BaseHTTPRequestHandler):
             # What the settings screen offers, including whether each one sends
             # anything off this machine. The UI states that per provider.
             self._json(200, {"providers": chat.available_providers()})
+        elif path == "/api/models":
+            # Which models this provider can serve, so the settings screen can
+            # offer a list instead of asking someone to type a name blind.
+            q = urllib.parse.parse_qs(self.path.partition("?")[2])
+            provider = (q.get("provider") or [""])[0]
+            try:
+                self._json(200, {"models": chat.list_models(
+                    provider, api_key=(q.get("api_key") or [None])[0])})
+            except chat.ChatError as e:
+                self._json(502, {"error": str(e)})
         elif path == "/api/captures":
             self._json(200, list_captures("pending"))
         elif path == "/api/pairing":
