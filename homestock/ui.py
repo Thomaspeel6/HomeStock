@@ -589,17 +589,27 @@ PAIR_PAGE = """<title>Pair with HomeStock</title>""" + _HEAD.replace("__CHIP__",
 </div>
 <script>
 const go = document.getElementById("go");
-go.onclick = async () => {
+const field = document.getElementById("code");
+
+async function attempt(code) {
   go.disabled = true;
   const r = await fetch("/api/pair", {
     method: "POST", headers: {"content-type": "application/json"},
-    body: JSON.stringify({code: document.getElementById("code").value}),
+    body: JSON.stringify({code}),
   });
   if (r.ok) { location.href = "/capture"; return; }
   const b = await r.json().catch(() => ({}));
   document.getElementById("err").textContent = b.error || "That code did not work.";
   go.disabled = false;
-};
+}
+
+go.onclick = () => attempt(field.value);
+field.addEventListener("keydown", e => { if (e.key === "Enter") attempt(field.value); });
+
+// Arrived by scanning the QR code on the laptop: the code is already in the
+// URL, so pair without making anyone read six digits off a screen.
+const fromQR = new URLSearchParams(location.search).get("code");
+if (fromQR) { field.value = fromQR; attempt(fromQR); }
 </script></body>
 """
 

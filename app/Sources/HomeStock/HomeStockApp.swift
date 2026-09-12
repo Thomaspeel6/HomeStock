@@ -31,6 +31,7 @@ enum Pane: String, CaseIterable, Identifiable {
     case shopping = "Shopping"
     case soon = "Use soon"
     case house = "In the house"
+    case add = "Add"
     case chat = "Chat"
 
     var id: String { rawValue }
@@ -40,6 +41,7 @@ enum Pane: String, CaseIterable, Identifiable {
         case .shopping: "cart"
         case .soon: "clock.badge.exclamationmark"
         case .house: "cabinet"
+        case .add: "plus.viewfinder"
         case .chat: "bubble.left.and.text.bubble.right"
         }
     }
@@ -73,6 +75,8 @@ struct RootView: View {
                              emptySymbol: "leaf")
             case .house:
                 HouseView(items: backend.state?.shelf ?? [])
+            case .add:
+                AddView()
             case .chat:
                 ChatView()
             }
@@ -84,6 +88,7 @@ struct RootView: View {
         case .shopping: backend.state?.order.count ?? 0
         case .soon: backend.state?.expiring.count ?? 0
         case .house: backend.state?.shelf.count ?? 0
+        case .add: backend.state?.pendingCaptures ?? 0
         case .chat: 0
         }
     }
@@ -110,6 +115,11 @@ struct EngineStatusBar: View {
                 Text(message).lineLimit(2)
             }
             Spacer()
+            SettingsLink {
+                Image(systemName: "gearshape")
+            }
+            .buttonStyle(.borderless)
+            .help("Settings (⌘,)")
         }
         .font(.caption)
         .foregroundStyle(.secondary)
