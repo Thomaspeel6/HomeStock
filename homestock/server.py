@@ -35,8 +35,15 @@ VALID_UNITS = ("unit", "g", "kg", "ml", "l", "pack")
 # Doors into the stock room. 'user' and 'recipe' are written by the tools
 # below rather than by add_items, so they are not offered here.
 VALID_SOURCES = ("email", "manual", "photo", "barcode", "loyalty")
+# Sources whose evidence carries its own date. Defaulting these to today would
+# silently corrupt the repurchase intervals every estimate is derived from: a
+# loyalty export is years of history, and a photographed till receipt is
+# whenever the shopping happened. 'barcode' and 'manual' are the only doors a
+# person walks through at the moment of buying, so only they may default.
+DATED_SOURCES = ("email", "photo", "loyalty")
 VALID_CAPTURE_KINDS = ("receipt_photo", "barcode", "note")
 VALID_STORAGE = ("pantry", "fridge", "freezer")
+MAX_EVENT_PAGE = 1000   # get_events hard cap; a full log will not fit a context window
 # How stale an ingestion heartbeat may get before get_health() calls it stale.
 STALE_INGEST_DAYS = 10
 # ISO-8601 UTC: full timestamp or bare date (receipts often have no time)
@@ -219,16 +226,75 @@ def _connect(path: Path | str) -> sqlite3.Connection:
     return conn
 
 
+def _statements(script: str):
+    """Split a migration into whole statements.
+
+    executescript() cannot be used here: it COMMITs any open transaction before
+    it runs, which would throw away the very lock that makes a rebuild safe.
+    sqlite3.complete_statement understands quoting, so this is not a naive
+    split on ';'.
+    """
+    buf = ""
+    for line in script.splitlines(keepends=True):
+        buf += line
+        if sqlite3.complete_statement(buf):
+            if buf.strip():
+                yield buf
+            buf = ""
+    if buf.strip():
+        yield buf
+
+
 def init_db(path: Path | str | None = None) -> None:
-    """Apply pending migrations. Runs once at startup, never per tool call."""
-    conn = _connect(path or DB_PATH)
+    """Apply pending migrations. Runs once at startup, never per tool call.
+
+    Every migration after the first is a destructive table rebuild, and
+    strangers hold these files. Two things therefore have to hold:
+
+    * **Atomic.** A crash between `DROP TABLE events` and the version bump
+      would leave a database with no event history and a leftover events_v2,
+      which no later version could open. The rebuild and the `user_version`
+      bump commit together or not at all.
+    * **One process at a time.** The documented topology is two processes over
+      one file, so both can start against a v1 database and both decide to
+      migrate. BEGIN IMMEDIATE takes the write lock *before* we re-read the
+      version, so the second process waits out its busy_timeout and then finds
+      nothing left to do, rather than replaying a rebuild over a finished one.
+    """
+    db = path or DB_PATH
+    conn = _connect(db)
     try:
         version = conn.execute("PRAGMA user_version").fetchone()[0]
-        for n in range(version, len(MIGRATIONS)):
-            conn.executescript(MIGRATIONS[n])
-            conn.execute(f"PRAGMA user_version = {n + 1}")
-            conn.commit()
+        if version > len(MIGRATIONS):
+            raise RuntimeError(
+                f"{db} is schema v{version}; this build of HomeStock understands up to "
+                f"v{len(MIGRATIONS)}. Upgrade HomeStock rather than downgrading the "
+                "database — an older build reads newer rows as purchases and would "
+                "silently miscount every estimate."
+            )
+        if version == len(MIGRATIONS):
+            return
+        # A no-op inside a transaction, so it has to be set before BEGIN.
+        # SQLite's documented table-rebuild procedure requires it off.
+        conn.execute("PRAGMA foreign_keys = OFF")
+        while True:
+            conn.execute("BEGIN IMMEDIATE")
+            version = conn.execute("PRAGMA user_version").fetchone()[0]
+            if version >= len(MIGRATIONS):
+                conn.execute("ROLLBACK")
+                break
+            try:
+                for stmt in _statements(MIGRATIONS[version]):
+                    conn.execute(stmt)
+                conn.execute(f"PRAGMA user_version = {version + 1}")
+                if broken := conn.execute("PRAGMA foreign_key_check").fetchall():
+                    raise RuntimeError(f"migration {version + 1} broke a foreign key: {broken}")
+                conn.execute("COMMIT")
+            except Exception:
+                conn.execute("ROLLBACK")
+                raise
     finally:
+        conn.execute("PRAGMA foreign_keys = ON")
         conn.close()
 
 
@@ -389,8 +455,17 @@ def add_items(
     """Record a purchase (one receipt). Idempotent per (source_ref, line_no).
 
     Each item: {name, quantity, unit, price?, category?, line_no}.
-    source: 'email' (purchased_at required — the receipt has a date) or
-    'manual' (purchased_at defaults to today).
+
+    source, and whether purchased_at is required:
+      'email'   a receipt email          — REQUIRED, the receipt carries a date
+      'photo'   a photographed receipt   — REQUIRED, the paper carries a date
+      'loyalty' a Clubcard/Nectar export — REQUIRED, the export carries a date
+      'barcode' scanned in the shop      — optional, defaults to today
+      'manual'  typed by the user        — optional, defaults to today
+    Only the two "happening right now" doors may default. Dating an old paper
+    receipt or a three-year loyalty export as today would silently corrupt the
+    repurchase intervals that every estimate is derived from.
+
     source_ref: retailer ORDER ID where extractable, else email Message-ID;
     manual fallback 'manual:<retailer>:<YYYY-MM-DD>:<total>' (+':2' suffix on
     collision — a nonzero 'ignored' count on a fresh receipt signals one).
@@ -400,8 +475,8 @@ def add_items(
     if source not in VALID_SOURCES:
         return {"inserted": 0, "ignored": 0, "rejected": [{"line_no": None, "reason": f"source must be one of {VALID_SOURCES}"}]}
     if purchased_at is None:
-        if source == "email":
-            return {"inserted": 0, "ignored": 0, "rejected": [{"line_no": None, "reason": "purchased_at is required for source='email' — the receipt has a date; do not guess"}]}
+        if source in DATED_SOURCES:
+            return {"inserted": 0, "ignored": 0, "rejected": [{"line_no": None, "reason": f"purchased_at is required for source={source!r} — the receipt carries a date; do not guess"}]}
         purchased_at = _today().isoformat()
     if err := _validate_occurred_at(purchased_at):
         return {"inserted": 0, "ignored": 0, "rejected": [{"line_no": None, "reason": err}]}
@@ -531,25 +606,44 @@ def record_ingest_run(
 
 
 @mcp.tool()
-def get_events(item: str | None = None, since: str | None = None) -> list[dict]:
+def get_events(item: str | None = None, since: str | None = None,
+               limit: int = 200, offset: int = 0) -> dict:
     """Read-only raw event access (explainability: every estimate is
-    recomputable from these rows). Includes voided rows, flagged."""
-    q = (
-        "SELECT i.name, e.type, e.quantity, e.unit, e.price, e.location, "
-        "e.occurred_at, e.source, e.source_ref, e.line_no, e.voided "
-        "FROM events e JOIN items i ON i.id = e.item_id WHERE 1=1"
-    )
+    recomputable from these rows). Includes voided rows, flagged.
+
+    Oldest first. Scope with `item` and `since` (ISO-8601 UTC, YYYY-MM-DD)
+    rather than paging the whole log: a few years of receipts is well over a
+    hundred thousand rows, which no context window will hold.
+
+    limit: 1..1000, default 200. offset: page forward from there.
+    Returns {events: [...], returned, offset, total, has_more}.
+    """
+    if not isinstance(limit, int) or isinstance(limit, bool) or not 1 <= limit <= MAX_EVENT_PAGE:
+        return {"error": f"limit must be an integer between 1 and {MAX_EVENT_PAGE}, got {limit!r}"}
+    if not isinstance(offset, int) or isinstance(offset, bool) or offset < 0:
+        return {"error": f"offset must be an integer >= 0, got {offset!r}"}
+    if since is not None and (err := _validate_occurred_at(since)):
+        return {"error": err.replace("occurred_at", "since")}
+
+    where = " WHERE 1=1"
     args: list = []
-    if item is not None:
-        q += " AND i.name = ?"
-        with get_db() as c:
-            args.append(_resolve(c, item))
-    if since is not None:
-        q += " AND e.occurred_at >= ?"
-        args.append(since)
-    q += " ORDER BY e.occurred_at, e.id"
     with get_db() as conn:
-        return [dict(r) for r in conn.execute(q, args)]
+        if item is not None:
+            where += " AND i.name = ?"
+            args.append(_resolve(conn, item))
+        if since is not None:
+            where += " AND e.occurred_at >= ?"
+            args.append(since)
+        frm = " FROM events e JOIN items i ON i.id = e.item_id" + where
+        total = conn.execute("SELECT COUNT(*)" + frm, args).fetchone()[0]
+        rows = conn.execute(
+            "SELECT i.name, e.type, e.quantity, e.unit, e.price, e.location, "
+            "e.occurred_at, e.source, e.source_ref, e.line_no, e.voided"
+            + frm + " ORDER BY e.occurred_at, e.id LIMIT ? OFFSET ?",
+            [*args, limit, offset],
+        ).fetchall()
+    return {"events": [dict(r) for r in rows], "returned": len(rows),
+            "offset": offset, "total": total, "has_more": offset + len(rows) < total}
 
 
 def _now_iso() -> str:
@@ -913,7 +1007,9 @@ def consume_items(items: list[dict]) -> dict:
 # over MCP makes the server self-contained: connect it, and everything needed
 # to run ingestion arrives with it.
 
-_RECIPE_NAME = re.compile(r"^[a-z0-9][a-z0-9-]{0,40}$")
+# \Z, not $: in Python $ also matches before a trailing newline, so "tesco\n"
+# would pass a check whose whole job is to keep this value out of a path.
+_RECIPE_NAME = re.compile(r"^[a-z0-9][a-z0-9-]{0,40}\Z")
 
 
 def _asset(rel: str) -> Path | None:

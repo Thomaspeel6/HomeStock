@@ -1,9 +1,11 @@
 """HomeStock server tests. Run: uv run pytest"""
 
 import json
+import sqlite3
 import subprocess
 import sys
-from datetime import date, timedelta
+from datetime import UTC, datetime, timedelta
+from pathlib import Path
 
 import pytest
 
@@ -19,9 +21,21 @@ get_stock = _fn(server.get_stock)
 what_should_i_order = _fn(server.what_should_i_order)
 void_event = _fn(server.void_event)
 record_ingest_run = _fn(server.record_ingest_run)
-get_events = _fn(server.get_events)
+get_events_page = _fn(server.get_events)
 
-today = date.today()
+
+def get_events(*args, **kwargs):
+    """The rows only. get_events() now paginates and returns an envelope;
+    every assertion here is about the rows, so unwrap once rather than at
+    forty call sites. get_events_page exercises the envelope itself."""
+    page = get_events_page(*args, **kwargs)
+    assert "error" not in page, page
+    return page["events"]
+
+# The server dates events in UTC (server._today()). Deriving the expected
+# dates from the local clock made the suite fail for any contributor behind
+# UTC, and for the author between midnight and 01:00 BST.
+today = datetime.now(UTC).date()
 
 
 def d(days_ago: int) -> str:
@@ -530,3 +544,114 @@ def test_recipe_names_cannot_escape_the_recipes_directory():
 def test_assets_resolve_from_a_checkout_or_an_installed_package():
     assert server._asset("recipes/tesco.yaml") is not None
     assert server._asset("recipes/nope.yaml") is None
+
+
+# --- Migration safety: strangers hold these files ---------------------------
+
+def test_a_crash_mid_rebuild_leaves_the_database_recoverable(tmp_path, monkeypatch):
+    """The rebuilds DROP the only table holding the user's history. If the
+    version bump and the rebuild did not commit together, a crash between them
+    left a database with no events and a leftover events_v2 — which every
+    later init_db() would then die on, permanently."""
+    db = tmp_path / "crash.db"
+    conn = server._connect(db)
+    for stmt in server._statements(server.MIGRATIONS[0]):
+        conn.execute(stmt)
+    conn.execute("PRAGMA user_version = 1")
+    conn.execute("INSERT INTO items (name) VALUES ('milk')")
+    conn.execute("INSERT INTO events (item_id, type, quantity, unit, occurred_at, source, source_ref)"
+                 " VALUES (1, 'bought', 2, 'l', '2024-01-01', 'email', 'o1')")
+    conn.commit()
+    conn.close()
+
+    broken = server.MIGRATIONS[1].replace("ALTER TABLE events_v2 RENAME TO events;",
+                                          "INSERT INTO no_such_table VALUES (1);")
+    monkeypatch.setattr(server, "MIGRATIONS", [server.MIGRATIONS[0], broken])
+    with pytest.raises(sqlite3.OperationalError):
+        server.init_db(db)
+    monkeypatch.undo()
+
+    server.init_db(db)  # the failed rebuild rolled back, so this still works
+    conn = server._connect(db)
+    assert conn.execute("SELECT COUNT(*) FROM events").fetchone()[0] == 1
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == len(server.MIGRATIONS)
+    conn.close()
+
+
+def test_two_processes_may_migrate_the_same_database_at_once(tmp_path):
+    """The documented topology is two processes over one file, so both can
+    start against a v1 database and both decide to migrate."""
+    db = tmp_path / "race.db"
+    conn = server._connect(db)
+    for stmt in server._statements(server.MIGRATIONS[0]):
+        conn.execute(stmt)
+    conn.execute("PRAGMA user_version = 1")
+    conn.commit()
+    conn.close()
+
+    code = f"import sys; sys.path.insert(0, {str(Path.cwd())!r})\nfrom homestock import server\nserver.init_db({str(db)!r})"
+    procs = [subprocess.Popen([sys.executable, "-c", code]) for _ in range(3)]
+    assert [p.wait(timeout=60) for p in procs] == [0, 0, 0]
+    conn = server._connect(db)
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == len(server.MIGRATIONS)
+    conn.close()
+
+
+def test_a_database_from_a_newer_release_is_refused_loudly(fresh_db):
+    """Silently opening it is worse: an older build counts 'corrected' rows as
+    purchases and miscounts every estimate without saying so."""
+    conn = server._connect(fresh_db)
+    conn.execute(f"PRAGMA user_version = {len(server.MIGRATIONS) + 5}")
+    conn.commit()
+    conn.close()
+    with pytest.raises(RuntimeError, match="Upgrade HomeStock"):
+        server.init_db(fresh_db)
+
+
+# --- Provenance: a date you invented is worse than no row -------------------
+
+@pytest.mark.parametrize("source", server.DATED_SOURCES)
+def test_dated_sources_must_carry_their_own_date(source):
+    r = add_items(items=[{"name": "milk", "quantity": 1, "unit": "l", "line_no": 0}],
+                  source=source, source_ref=f"{source}:1")
+    assert r["inserted"] == 0
+    assert "purchased_at is required" in r["rejected"][0]["reason"]
+
+
+@pytest.mark.parametrize("source", ["manual", "barcode"])
+def test_the_doors_a_person_walks_through_now_may_default_to_today(source):
+    r = add_items(items=[{"name": "milk", "quantity": 1, "unit": "l", "line_no": 0}],
+                  source=source, source_ref=f"{source}:1")
+    assert r["inserted"] == 1
+    assert get_events("milk")[0]["occurred_at"] == today.isoformat()
+
+
+# --- get_events pages, because a full log will not fit a context window -----
+
+def test_get_events_pages_rather_than_returning_the_whole_log():
+    for i in range(25):
+        seed_receipt("milk", i + 1, f"m{i}")
+    page = get_events_page("milk", limit=10)
+    assert page["returned"] == 10 and page["total"] == 25 and page["has_more"] is True
+    assert page["offset"] == 0
+    rest = get_events_page("milk", limit=10, offset=20)
+    assert rest["returned"] == 5 and rest["has_more"] is False
+    # oldest first, and the pages join up without gaps or repeats
+    seen = [e["occurred_at"] for e in
+            get_events_page("milk", limit=10)["events"]
+            + get_events_page("milk", limit=10, offset=10)["events"]
+            + rest["events"]]
+    assert seen == sorted(seen) and len(set(seen)) == 25
+
+
+@pytest.mark.parametrize("kwargs", [{"limit": 0}, {"limit": 10_000}, {"limit": "10"},
+                                    {"limit": True}, {"offset": -1}, {"since": "2026-9-1"}])
+def test_get_events_rejects_nonsense_instead_of_answering_wrongly(kwargs):
+    assert "error" in get_events_page(**kwargs)
+
+
+def test_a_recipe_name_cannot_smuggle_a_newline():
+    """'$' also matches before a trailing newline in Python; this value is
+    interpolated into a filesystem path."""
+    assert server._RECIPE_NAME.match("tesco\n") is None
+    assert server._RECIPE_NAME.match("tesco") is not None

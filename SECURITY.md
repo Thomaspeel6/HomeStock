@@ -45,7 +45,10 @@ welcome if you think a trade-off is wrong.
 - **Loopback mode has no authentication at all**, by design: the filesystem is
   the permission model. Anything that can run as your user can already read
   `homestock.db` directly. Writes still require a per-launch token so that a
-  web page you happen to visit cannot POST to `localhost`.
+  web page you happen to visit cannot POST to `localhost`, and every request
+  must arrive under a `Host` we recognise — without that check, a site whose
+  DNS name resolves to `127.0.0.1` would be same-origin with the window and
+  could both read your kitchen and lift the write token out of the page.
 - **Your AI client is outside this boundary.** When an agent reads your stock
   to answer a question, that conversation goes wherever your AI client sends
   it, under its own privacy policy. HomeStock cannot change that, and does not

@@ -29,6 +29,7 @@ import json
 import secrets
 import socket
 import sys
+import threading
 import time
 import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -36,13 +37,42 @@ from pathlib import Path
 
 from homestock import server
 
+# Two secrets, because they answer two different questions and one of them
+# travels somewhere the other must not. TOKEN is embedded in the pages we serve
+# and proves *which page* is asking; DEVICE_SECRET lives in a cookie and proves
+# *which device*. Cookies ride along with requests the page did not author, so
+# a cookie may establish identity but must never confer write capability — and
+# that separation is only real if the two values differ. When they were the
+# same string, anything that leaked the "read-only" cookie leaked full write
+# access, and reading a page handed you the write secret.
 TOKEN = secrets.token_urlsafe(24)
+DEVICE_SECRET = secrets.token_urlsafe(24)
 LAN_MODE = False
 PAIR_TTL = 600           # a pairing code is good for ten minutes
 PAIR_MAX_ATTEMPTS = 5    # then it is burned, not merely delayed
+PAIRING_DAYS = 30        # how long a paired phone stays paired
 MAX_UPLOAD = 12 * 1024 * 1024
+MAX_PAIR_BODY = 256      # a pairing code is six digits; nothing else belongs here
+LOOPBACK = ("127.0.0.1", "::1")
 
 _pair = {"code": None, "expires": 0.0, "attempts": 0}
+_lan_ip_cache: list[str | None] = [None]
+# ThreadingHTTPServer runs every request on its own thread, so the guess
+# counter is shared mutable state. Without this lock `attempts += 1` is a
+# read-modify-write that concurrent guesses lose, and the five-attempt burn —
+# the only brute-force control on a six-digit code — stops being a limit.
+_pair_lock = threading.Lock()
+
+
+def _secret_eq(given: str, expected: str) -> bool:
+    """Constant-time compare that survives hostile input.
+
+    secrets.compare_digest raises TypeError on non-ASCII str, and every caller
+    here is fed raw header or body text, so one high byte on the wire would
+    otherwise crash the handler pre-auth on every route."""
+    if not isinstance(given, str) or not given.isascii():
+        return False
+    return secrets.compare_digest(given, expected)
 
 
 def _fn(tool):
@@ -61,33 +91,46 @@ list_captures = _fn(server.list_captures)
 
 
 def new_pair_code() -> str:
-    _pair.update(code=f"{secrets.randbelow(1000000):06d}",
-                 expires=time.time() + PAIR_TTL, attempts=0)
-    return _pair["code"]
+    with _pair_lock:
+        _pair.update(code=f"{secrets.randbelow(1000000):06d}",
+                     expires=time.time() + PAIR_TTL, attempts=0)
+        return _pair["code"]
 
 
 def check_pair_code(given: str) -> bool:
-    """One-shot check. A wrong guess costs an attempt; five burns the code."""
-    code = _pair["code"]
-    if not code or time.time() > _pair["expires"]:
+    """A wrong guess costs an attempt; PAIR_MAX_ATTEMPTS wrong guesses burn it.
+
+    Only *failures* count. A household has more than one device, and a code
+    that died on its fifth correct use would lock out the phone it was printed
+    for. The whole check is under the lock so that concurrent guesses cannot
+    lose increments and buy themselves extra tries.
+    """
+    with _pair_lock:
+        code = _pair["code"]
+        if not code or time.time() > _pair["expires"]:
+            return False
+        if _secret_eq(given.strip().replace("-", "").replace(" ", ""), code):
+            return True
+        _pair["attempts"] += 1
+        if _pair["attempts"] >= PAIR_MAX_ATTEMPTS:
+            _pair["code"] = None
         return False
-    _pair["attempts"] += 1
-    if _pair["attempts"] > PAIR_MAX_ATTEMPTS:
-        _pair["code"] = None
-        return False
-    return secrets.compare_digest(given.strip().replace("-", "").replace(" ", ""), code)
 
 
 def lan_ip() -> str:
-    """This machine's address on the local network. No packets are sent."""
-    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    try:
-        s.connect(("192.0.2.1", 1))  # TEST-NET-1: routable nowhere
-        return s.getsockname()[0]
-    except OSError:
-        return "127.0.0.1"
-    finally:
-        s.close()
+    """This machine's address on the local network. No packets are sent.
+
+    Cached: _host_ok() consults it on every request."""
+    if _lan_ip_cache[0] is None:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        try:
+            s.connect(("192.0.2.1", 1))  # TEST-NET-1: routable nowhere
+            _lan_ip_cache[0] = s.getsockname()[0]
+        except OSError:
+            _lan_ip_cache[0] = "127.0.0.1"
+        finally:
+            s.close()
+    return _lan_ip_cache[0]
 
 
 def build_state() -> dict:
@@ -307,8 +350,8 @@ PAGE = """<title>HomeStock</title>
 
 <footer>
   <p id="foot"></p>
-  <p class="prose">One file on this computer. Copy it to back it up, delete it to erase
-     everything. Nothing is sent anywhere.</p>
+  <p class="prose">A database and a captures folder on this computer. Copy them to back
+     up, delete them to erase everything. Nothing is sent anywhere.</p>
 </footer>
 
 <script>
@@ -575,12 +618,13 @@ class Handler(BaseHTTPRequestHandler):
                 + "</html>")
         self._send(200, html.encode(), "text/html; charset=utf-8")
 
-    def _body(self) -> dict | None:
+    def _body(self, cap: int | None = None) -> dict | None:
+        cap = cap if cap is not None else MAX_UPLOAD * 2  # base64 inflates by ~4/3
         try:
             n = int(self.headers.get("Content-Length", 0))
         except ValueError:
             return None
-        if n <= 0 or n > MAX_UPLOAD * 2:  # base64 inflates by ~4/3
+        if n <= 0 or n > cap:
             return None
         try:
             body = json.loads(self.rfile.read(n) or b"{}")
@@ -593,26 +637,51 @@ class Handler(BaseHTTPRequestHandler):
         attach a custom header cross-site without a preflight we never answer,
         so this — and not the cookie — is what stops another page on the
         network from driving this one."""
-        return secrets.compare_digest(self.headers.get("x-homestock-token", ""), TOKEN)
+        return _secret_eq(self.headers.get("x-homestock-token", ""), TOKEN)
 
     def _cookie_token(self) -> bool:
         """Proof this device has paired. Rides along with any request the
         browser makes to us, cross-site ones included — so it establishes who,
-        never what may be done."""
+        never what may be done. Deliberately a different secret from TOKEN:
+        presenting this value as the write header must not work."""
         for part in self.headers.get("Cookie", "").split(";"):
             k, _, v = part.strip().partition("=")
-            if k == "hs" and secrets.compare_digest(v, TOKEN):
+            if k == "hs" and _secret_eq(v, DEVICE_SECRET):
                 return True
         return False
 
+    def _loopback(self) -> bool:
+        return self.client_address[0] in LOOPBACK
+
+    def _host_ok(self) -> bool:
+        """Reject a request that reached us under someone else's name.
+
+        Without this the loopback server is open to DNS rebinding: a page on
+        the public web whose hostname resolves to 127.0.0.1 becomes same-origin
+        with us, and same-origin means it can read the whole grocery history
+        and lift TOKEN straight out of the page it is allowed to fetch. The
+        custom-header rule only ever defended against *cross*-origin callers.
+        """
+        host = self.headers.get("Host", "").strip()
+        name = host.rsplit(":", 1)[0].strip("[]") if ":" in host else host
+        allowed = {*LOOPBACK, "localhost"}
+        if LAN_MODE:
+            allowed.add(lan_ip())
+        return name in allowed
+
     def _paired(self) -> bool:
         """In LAN mode nothing is readable until a device has paired. On
-        loopback the filesystem is already the permission model."""
-        return (self._header_token() or self._cookie_token()) if LAN_MODE else True
+        loopback the filesystem is already the permission model — and the
+        laptop has to be able to reach its own pairing code, which is the
+        page it would otherwise be locked out of."""
+        return True if (not LAN_MODE or self._loopback()) else (
+            self._header_token() or self._cookie_token())
 
     # --- routes -----------------------------------------------------------
 
     def do_GET(self) -> None:
+        if not self._host_ok():
+            return self._json(403, {"error": "unrecognised Host"})
         path = self.path.split("?")[0]
         if not self._paired():
             return self._page(PAIR_PAGE) if path in ("/", "/capture") else self._json(403, {"error": "pair first"})
@@ -635,17 +704,22 @@ class Handler(BaseHTTPRequestHandler):
             self._json(404, {"error": "not found"})
 
     def do_POST(self) -> None:
+        if not self._host_ok():
+            return self._json(403, {"error": "unrecognised Host"})
         path = self.path.split("?")[0]
 
         if path == "/api/pair":
-            body = self._body()
+            # Unauthenticated, so it gets its own tiny body cap rather than the
+            # photo-sized one: nothing here is bigger than a six-digit code.
+            body = self._body(MAX_PAIR_BODY)
             if not body or not isinstance(body.get("code"), str):
                 return self._json(400, {"error": "expected {code}"})
             if not check_pair_code(body["code"]):
                 return self._json(403, {"error": "That code is wrong or expired. "
                                                  "Check your computer for a new one."})
             return self._send(200, b'{"paired":true}', "application/json",
-                              cookie=f"hs={TOKEN}; Path=/; SameSite=Strict; Max-Age=2592000")
+                              cookie=f"hs={DEVICE_SECRET}; Path=/; HttpOnly; SameSite=Strict; "
+                                     f"Max-Age={PAIRING_DAYS * 86400}")
 
         if not self._paired():
             return self._json(403, {"error": "pair first"})

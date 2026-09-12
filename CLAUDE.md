@@ -60,9 +60,14 @@ makes writers queue instead of erroring — see `test_two_process_concurrent_wri
    `get_health()` returns counts and dates only — never item names.
    LAN mode (`--lan`) is opt-in and never the default: it is the one place
    where a mistake exposes a household to its own network. Unpaired devices
-   read nothing; pairing codes expire and burn after five wrong guesses; the
-   cookie proves *which device*, the header proves *which page*, and writes
-   require the header. Do not let a cookie alone authorise a write.
+   read nothing; pairing codes expire and burn after five wrong guesses (only
+   failures count, under a lock — a racy counter is not a limit); the cookie
+   proves *which device*, the header proves *which page*, and writes require
+   the header. `TOKEN` and `DEVICE_SECRET` must stay **different values**: the
+   separation is only real if presenting the cookie's value as the write header
+   fails. Loopback is exempt from pairing (the laptop must be able to read its
+   own pairing code) but never from the `Host` allowlist, which is what keeps
+   DNS rebinding from making a public page same-origin with the window.
 5. **Migrations are append-only.** `MIGRATIONS` in `homestock/server.py` is a
    public contract; strangers hold these database files. Never edit a shipped
    migration. Every schema change needs an upgrade-preserves-data test.

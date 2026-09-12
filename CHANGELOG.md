@@ -52,7 +52,56 @@ called out here in capital letters.
 - The wheel now ships `prompts/` and `recipes/`, which it previously did not;
   an installed copy had neither.
 
+### Security
+
+- **The pairing cookie is no longer the write token.** They were the same
+  string, so the documented rule — the cookie says which device, the header
+  says which page — was a comment rather than a mechanism, and anything that
+  leaked a "read-only" cookie leaked full write access. Two independent
+  secrets now, and the cookie is `HttpOnly`.
+- **Requests must arrive under a `Host` we recognise.** Without that check the
+  loopback window was open to DNS rebinding: a page on the public web whose
+  name resolves to `127.0.0.1` is same-origin with us, so it could read the
+  whole grocery history and lift the write token out of the page it was
+  allowed to fetch. The custom-header rule only ever stopped *cross*-origin
+  callers.
+- **Five wrong guesses now actually burn the code.** The counter was an
+  unlocked read-modify-write under a threading server, so concurrent guesses
+  lost increments and bought themselves extra tries against a six-digit
+  secret. It is locked, the boundary is exact, and only failures count — a
+  correct code no longer burns an attempt, so the second phone in a household
+  can still pair.
+- **Hostile credentials no longer crash the handler.** `compare_digest` raises
+  on non-ASCII text, and three call sites were fed raw header and body bytes,
+  so one high byte would take down any route before authentication.
+- Loopback is exempt from pairing, so LAN mode no longer locks the laptop out
+  of the page displaying its own pairing code.
+
 ### Fixed
+
+- **Migrations commit atomically and one process at a time.** The rebuilds
+  `DROP` the only table holding a user's history; a crash between that and the
+  version bump left a database no later version could open, and two processes
+  starting together could both apply them. Verified by tests that kill a
+  migration mid-rebuild and that race three processes at one file.
+- **A database written by a newer release is refused loudly** instead of being
+  opened by an older build that reads corrections as purchases.
+- **`purchased_at` is required for `photo` and `loyalty` too.** Only `manual`
+  and `barcode` — the doors a person walks through at the moment of buying —
+  may default to today. A photographed till receipt or a three-year loyalty
+  export dated today silently corrupts the repurchase intervals every estimate
+  rests on.
+- **`get_events` paginates** (default 200, cap 1000) and validates `since`. A
+  four-year log returned 168k rows — 35 MB of JSON — into the agent's context
+  on a single call.
+- The recipe-name check anchors with `\Z`, not `$`, which in Python also
+  matches before a trailing newline — on a value interpolated into a path.
+- The window no longer promises that deleting one file erases everything; the
+  photographed receipts live beside it in `captures/`.
+- The test suite derives its dates in UTC, as the server does. It failed for
+  any contributor behind UTC, and for the author between midnight and 01:00.
+
+### Also fixed
 
 - **Binning something now marks it gone**, not merely wasted, so the row leaves
   "Use soon" instead of nagging about food already in the bin.

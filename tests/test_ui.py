@@ -4,7 +4,7 @@ import json
 import threading
 import urllib.error
 import urllib.request
-from datetime import date, timedelta
+from datetime import UTC, datetime, timedelta
 from http.server import ThreadingHTTPServer
 from pathlib import Path
 
@@ -16,9 +16,21 @@ _fn = lambda t: t.fn if hasattr(t, "fn") else t
 add_items = _fn(server.add_items)
 set_shelf_life = _fn(server.set_shelf_life)
 correct_stock = _fn(server.correct_stock)
-get_events = _fn(server.get_events)
+get_events_page = _fn(server.get_events)
 
-today = date.today()
+
+def get_events(*args, **kwargs):
+    """The rows only. get_events() now paginates and returns an envelope;
+    every assertion here is about the rows, so unwrap once rather than at
+    forty call sites. get_events_page exercises the envelope itself."""
+    page = get_events_page(*args, **kwargs)
+    assert "error" not in page, page
+    return page["events"]
+
+# The server dates events in UTC (server._today()). Deriving the expected
+# dates from the local clock made the suite fail for any contributor behind
+# UTC, and for the author between midnight and 01:00 BST.
+today = datetime.now(UTC).date()
 # The proxy in some environments would swallow loopback requests.
 _open = urllib.request.build_opener(urllib.request.ProxyHandler({})).open
 
@@ -160,10 +172,12 @@ def loopback(monkeypatch):
     monkeypatch.setattr(ui, "_pair", {"code": None, "expires": 0.0, "attempts": 0})
 
 
-def get(base, path, cookie=None):
+def get(base, path, cookie=None, host=None):
     req = urllib.request.Request(f"{base}{path}")
     if cookie:
         req.add_header("Cookie", cookie)
+    if host:
+        req.add_header("Host", host)  # what a rebound DNS name looks like on the wire
     return _open(req)
 
 
@@ -227,8 +241,18 @@ def test_capture_still_needs_the_token_on_loopback(http):
 
 # --- LAN mode: nothing is readable until a device pairs ----------------------
 
-def test_lan_mode_hides_everything_until_paired(http, monkeypatch):
+@pytest.fixture
+def from_the_network(monkeypatch):
+    """LAN mode, as seen by a phone rather than by this laptop.
+
+    Every test here dials 127.0.0.1, but loopback is deliberately exempt from
+    pairing — the laptop has to be able to read its own pairing code. Pretending
+    the peer is elsewhere is what actually exercises the gate."""
     monkeypatch.setattr(ui, "LAN_MODE", True)
+    monkeypatch.setattr(ui.Handler, "_loopback", lambda self: False)
+
+
+def test_lan_mode_hides_everything_until_paired(http, from_the_network):
     buy("milk", 5, "m1")
 
     # the pantry itself must not leak to an unpaired device on the network
@@ -240,13 +264,24 @@ def test_lan_mode_hides_everything_until_paired(http, monkeypatch):
         capture(http, {"kind": "note", "text": "milk"}, token="guessed")
     assert e.value.code == 403
 
-    # and the pages offer pairing rather than content
-    assert b"Pairing code" in get(http, "/").read()
-    assert b"Buy these" not in get(http, "/capture").read()
+    # and the pages offer pairing rather than content — including the write
+    # token, which an unpaired device must not be handed
+    for path in ("/", "/capture"):
+        body = get(http, path).read()
+        assert b"Pairing code" in body
+        assert ui.TOKEN.encode() not in body
 
 
-def test_pairing_grants_access_and_a_wrong_code_does_not(http, monkeypatch):
+def test_the_laptop_is_never_locked_out_of_its_own_pairing_code(http, monkeypatch):
+    """LAN mode gates the network, not this machine. If loopback needed the
+    code too, the page that displays the code would be behind the code."""
     monkeypatch.setattr(ui, "LAN_MODE", True)
+    ui.new_pair_code()
+    assert b"Your kitchen" in get(http, "/").read()
+    assert json.loads(get(http, "/api/pairing").read())["code"] == ui._pair["code"]
+
+
+def test_pairing_grants_access_and_a_wrong_code_does_not(http, from_the_network):
     buy("milk", 5, "m1")
     code = ui.new_pair_code()
 
@@ -256,7 +291,10 @@ def test_pairing_grants_access_and_a_wrong_code_does_not(http, monkeypatch):
 
     resp = pair(http, code)
     cookie = resp.headers["Set-Cookie"]
-    assert "SameSite=Strict" in cookie and ui.TOKEN in cookie
+    assert "SameSite=Strict" in cookie and "HttpOnly" in cookie
+    # The cookie says which device, never which page. If it carried the write
+    # token, anything that leaked a "read-only" cookie would leak write access.
+    assert ui.DEVICE_SECRET in cookie and ui.TOKEN not in cookie
 
     jar = cookie.split(";")[0]
     assert json.loads(get(http, "/api/state", cookie=jar).read())["health"]["items"] == 1
@@ -265,13 +303,49 @@ def test_pairing_grants_access_and_a_wrong_code_does_not(http, monkeypatch):
     assert r["status"] == "pending"
 
 
-def test_a_guessed_code_burns_after_five_attempts(http, monkeypatch):
-    monkeypatch.setattr(ui, "LAN_MODE", True)
+def test_the_cookie_value_is_not_accepted_as_the_write_header(http, from_the_network):
+    """The two secrets have to actually differ, not merely be named differently."""
+    buy("milk", 5, "m1")
+    jar = pair(http, ui.new_pair_code()).headers["Set-Cookie"].split(";")[0]
+    with pytest.raises(urllib.error.HTTPError) as e:
+        post(http, {"item": "milk", "action": "out"}, token=jar.split("=", 1)[1])
+    assert e.value.code == 403
+    assert [ev["type"] for ev in get_events("milk")] == ["bought"]
+
+
+@pytest.mark.parametrize("host", ["evil.test", "attacker.example.com"])
+def test_a_request_under_a_foreign_host_name_is_refused(http, host):
+    """DNS rebinding: a public page whose name resolves to 127.0.0.1 is
+    same-origin with us, so the custom-header rule alone does not stop it. It
+    cannot forge the Host header, so that is what we check."""
+    buy("milk", 5, "m1")
+    for path in ("/api/state", "/"):
+        with pytest.raises(urllib.error.HTTPError) as e:
+            get(http, path, host=host)
+        assert e.value.code == 403
+
+
+def test_non_ascii_credentials_are_refused_rather_than_crashing(http, from_the_network):
+    """secrets.compare_digest raises TypeError on non-ASCII str, and these
+    values arrive straight off the wire."""
+    ui.new_pair_code()
+    with pytest.raises(urllib.error.HTTPError) as e:
+        pair(http, "café12")
+    assert e.value.code == 403
+    with pytest.raises(urllib.error.HTTPError) as e:
+        get(http, "/api/state", cookie="hs=café")
+    assert e.value.code == 403
+
+
+def test_a_guessed_code_burns_after_five_attempts(http, from_the_network):
     code = ui.new_pair_code()
     wrong = "999999" if code != "999999" else "888888"
-    for _ in range(5):
+    for _ in range(ui.PAIR_MAX_ATTEMPTS - 1):
         with pytest.raises(urllib.error.HTTPError):
             pair(http, wrong)
+    assert ui._pair["code"] == code  # not burned yet — the boundary is exact
+    with pytest.raises(urllib.error.HTTPError):
+        pair(http, wrong)
     # the real code is now dead too — the laptop must issue a fresh one
     with pytest.raises(urllib.error.HTTPError) as e:
         pair(http, code)
@@ -279,8 +353,7 @@ def test_a_guessed_code_burns_after_five_attempts(http, monkeypatch):
     assert ui.check_pair_code(ui.new_pair_code()) is True
 
 
-def test_expired_codes_are_refused(http, monkeypatch):
-    monkeypatch.setattr(ui, "LAN_MODE", True)
+def test_expired_codes_are_refused(http, from_the_network):
     code = ui.new_pair_code()
     ui._pair["expires"] = 0.0
     assert ui.check_pair_code(code) is False
