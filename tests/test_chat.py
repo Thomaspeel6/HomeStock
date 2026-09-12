@@ -44,13 +44,22 @@ def test_every_tool_carries_a_description_and_a_schema():
 
 
 def test_run_tool_reports_bad_arguments_rather_than_raising():
-    assert "error" in chat.run_tool("get_stock", {"nonsense": 1})
-    assert "no such tool" in chat.run_tool("not_a_tool", {})["error"]
+    result, events = chat.run_tool("get_stock", {"nonsense": 1})
+    assert "error" in result and events == []
+    assert "no such tool" in chat.run_tool("not_a_tool", {})[0]["error"]
 
 
 def test_run_tool_actually_reaches_the_event_log():
     buy("milk", 5, "m1", unit="l")
-    assert chat.run_tool("get_stock", {"item": "milk"})["name"] == "milk"
+    result, events = chat.run_tool("get_stock", {"item": "milk"})
+    assert result["name"] == "milk"
+    assert events == []          # a read writes nothing, so there is nothing to undo
+
+
+def test_a_read_only_tool_never_reports_events_to_undo():
+    buy("milk", 5, "m1", unit="l")
+    for name, args in [("get_stock", {}), ("what_should_i_order", {}), ("get_health", {})]:
+        assert chat.run_tool(name, args)[1] == [], name
 
 
 class FakeProvider:
@@ -115,10 +124,11 @@ def test_a_writing_tool_is_reported_as_having_written(monkeypatch):
 
     out = chat.chat([{"role": "user", "content": "we're out of milk"}],
                     provider="openai", api_key="k")
-    assert out["tool_calls"][0] == {"name": "correct_stock",
-                                    "args": {"item": "milk", "quantity": 0}, "wrote": True}
+    call = out["tool_calls"][0]
+    assert call["name"] == "correct_stock" and call["wrote"] is True
+    assert call["event_ids"] and out["undo"] == call["event_ids"]
     # and it really happened, rather than merely being claimed
-    assert chat.run_tool("get_stock", {"item": "milk"})["estimated_state"] == "likely_out"
+    assert chat.run_tool("get_stock", {"item": "milk"})[0]["estimated_state"] == "likely_out"
 
 
 def test_the_tool_loop_is_bounded(monkeypatch):
@@ -215,3 +225,62 @@ def test_local_provider_needs_no_key_to_list_models(monkeypatch):
     monkeypatch.setattr(chat, "_get", lambda url, headers: called.append(headers) or {"models": []})
     chat.list_models("ollama")
     assert called and "authorization" not in called[0]
+
+
+# --- Undo: a weak model reaching for a destructive tool must be recoverable --
+
+def test_a_turn_that_wrote_can_be_undone(monkeypatch):
+    """Observed in the wild: asked "what am I about to waste?", llama3.2 called
+    discard_item. It failed on bad arguments that time. It will not always."""
+    buy("milk", 5, "m1", unit="l")
+    fake = FakeProvider([openai_reply(calls=[("correct_stock", {"item": "milk", "quantity": 0})]),
+                         openai_reply(text="Marked as out.")])
+    monkeypatch.setattr(chat, "_post", fake)
+
+    out = chat.chat([{"role": "user", "content": "we're out"}], provider="openai", api_key="k")
+    assert chat.run_tool("get_stock", {"item": "milk"})[0]["estimated_state"] == "likely_out"
+
+    assert server.void_event_ids(out["undo"]) == len(out["undo"])
+    # the correction no longer counts, and the purchase it was layered over stands
+    stock = chat.run_tool("get_stock", {"item": "milk"})[0]
+    assert stock["confirmed"] is False
+    live = [e["type"] for e in get_events_rows("milk") if not e["voided"]]
+    assert live == ["bought"]
+    # voided, never deleted: the log still records that it happened and was withdrawn
+    assert any(e["voided"] for e in get_events_rows("milk"))
+
+
+def get_events_rows(item):
+    page = _fn(server.get_events)(item)
+    return page["events"]
+
+
+def test_undoing_twice_changes_nothing_more():
+    buy("milk", 5, "m1", unit="l")
+    _, events = chat.run_tool("correct_stock", {"item": "milk", "quantity": 0})
+    assert server.void_event_ids(events) == len(events)
+    assert server.void_event_ids(events) == 0      # already voided
+
+
+def test_void_event_ids_ignores_nonsense():
+    assert server.void_event_ids([]) == 0
+    assert server.void_event_ids([None, "3", True]) == 0
+
+
+def test_with_writes_off_the_writing_tools_are_not_even_offered():
+    """A model cannot misuse a tool it was never given."""
+    names = {s["function"]["name"] for s in chat.tool_schemas("openai", writes=False)}
+    assert not (names & chat.WRITING_TOOLS)
+    assert "get_stock" in names and "what_should_i_order" in names
+
+
+def test_read_only_chat_cannot_change_the_kitchen(monkeypatch):
+    buy("milk", 5, "m1", unit="l")
+    fake = FakeProvider([openai_reply(text="You probably have milk.")])
+    monkeypatch.setattr(chat, "_post", fake)
+
+    out = chat.chat([{"role": "user", "content": "milk?"}], provider="openai",
+                    api_key="k", allow_writes=False)
+    assert out["undo"] == []
+    sent = fake.sent[0]["payload"]["tools"]
+    assert not ({t["function"]["name"] for t in sent} & chat.WRITING_TOOLS)

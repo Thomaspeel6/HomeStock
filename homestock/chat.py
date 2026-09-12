@@ -142,13 +142,15 @@ def list_models(provider: str, api_key: str | None = None,
     return sorted(n for n in names if n)
 
 
-def tool_schemas(wire: str) -> list[dict]:
+def tool_schemas(wire: str, writes: bool = True) -> list[dict]:
     """The MCP tool surface, in the shape this provider expects.
 
     Read from the FastMCP tool manager rather than hand-listed, so a tool added
     to server.py needs no change here and the two can never disagree."""
     out = []
     for t in server.mcp._tool_manager.list_tools():
+        if not writes and t.name in WRITING_TOOLS:
+            continue
         schema = t.parameters or {"type": "object", "properties": {}}
         desc = (t.description or "").strip()
         if wire == "anthropic":
@@ -159,18 +161,28 @@ def tool_schemas(wire: str) -> list[dict]:
     return out
 
 
-def run_tool(name: str, args: dict) -> Any:
-    """Execute one tool call. Never raises: a model that sent bad arguments
-    should be told so and allowed to try again, not crash the conversation."""
+def run_tool(name: str, args: dict) -> tuple[Any, list[int]]:
+    """Execute one tool call, and report which events it created.
+
+    Never raises: a model that sent bad arguments should be told so and allowed
+    to try again, not crash the conversation. Returns (result, event_ids) —
+    the ids are what makes a turn undoable, because a small model asked a
+    read-only question will still sometimes reach for a destructive tool.
+    """
     tool = server.mcp._tool_manager.get_tool(name)
     if tool is None:
-        return {"error": f"no such tool {name!r}"}
+        return {"error": f"no such tool {name!r}"}, []
+    before = server.max_event_id() if name in WRITING_TOOLS else 0
     try:
-        return tool.fn(**args)
+        result = tool.fn(**args)
     except TypeError as e:
-        return {"error": f"bad arguments for {name}: {e}"}
+        return {"error": f"bad arguments for {name}: {e}"}, []
     except Exception as e:
-        return {"error": f"{name} failed: {type(e).__name__}: {e}"}
+        return {"error": f"{name} failed: {type(e).__name__}: {e}"}, []
+    if name not in WRITING_TOOLS:
+        return result, []
+    after = server.max_event_id()
+    return result, list(range(before + 1, after + 1))
 
 
 def _post(url: str, payload: dict, headers: dict) -> dict:
@@ -229,7 +241,7 @@ def _anthropic_round(cfg, model, key, messages, tools, base_url):
 
 def chat(messages: list[dict], provider: str, model: str | None = None,
          api_key: str | None = None, base_url: str | None = None,
-         use_tools: bool = True) -> dict:
+         use_tools: bool = True, allow_writes: bool = True) -> dict:
     """One turn of conversation, tools and all.
 
     `messages` is the history in OpenAI shape ({role, content}); the system
@@ -248,7 +260,10 @@ def chat(messages: list[dict], provider: str, model: str | None = None,
     if not model:
         raise ChatError(f"Choose a model for {cfg['label']} in Settings.")
     base_url = (base_url or cfg["base_url"]).rstrip("/")
-    tools = tool_schemas(cfg["wire"]) if use_tools else []
+    # With writes off, the writing tools are not offered at all rather than
+    # offered and refused: a model cannot misuse a tool it was never given,
+    # and it stops narrating attempts it is not allowed to make.
+    tools = tool_schemas(cfg["wire"], writes=allow_writes) if use_tools else []
     run_round = _anthropic_round if cfg["wire"] == "anthropic" else _openai_round
 
     convo = [{"role": "system", "content": SYSTEM_PROMPT}, *messages]
@@ -262,14 +277,16 @@ def chat(messages: list[dict], provider: str, model: str | None = None,
         text, calls, raw = run_round(cfg, model, api_key, convo, [] if last else tools, base_url)
         if last or not calls:
             return {"reply": text, "tool_calls": performed, "rounds": round_no + 1,
-                    "hit_tool_limit": bool(last and calls)}
+                    "hit_tool_limit": bool(last and calls),
+                    # Everything this turn wrote, so the UI can offer one Undo.
+                    "undo": [i for c in performed for i in c["event_ids"]]}
 
         convo.append(raw)
         results = []
         for c in calls:
-            result = run_tool(c["name"], c["args"])
+            result, event_ids = run_tool(c["name"], c["args"])
             performed.append({"name": c["name"], "args": c["args"],
-                              "wrote": c["name"] in WRITING_TOOLS})
+                              "wrote": bool(event_ids), "event_ids": event_ids})
             results.append((c, result))
 
         if cfg["wire"] == "anthropic":

@@ -4,6 +4,7 @@ struct SettingsView: View {
     @Environment(Backend.self) private var backend
     @AppStorage("provider") private var providerID = "ollama"
     @AppStorage("model") private var model = ""
+    @AppStorage("allowWrites") private var allowWrites = true
     @State private var apiKey = ""
     @State private var models: [String] = []
     @State private var loadingModels = false
@@ -54,6 +55,14 @@ struct SettingsView: View {
                         }
                         .disabled(apiKey.isEmpty)
                     }
+                }
+            }
+
+            Section("Chat") {
+                Toggle(isOn: $allowWrites) {
+                    Text("Let chat change my kitchen")
+                    Text("With this off, chat can read your stock but cannot correct, discard or add anything. Small models sometimes reach for a destructive tool when asked a plain question.")
+                        .font(.caption).foregroundStyle(.secondary)
                 }
             }
 

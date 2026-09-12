@@ -287,8 +287,15 @@ final class Backend {
         await refresh()
     }
 
-    func send(history: [Message], provider: Provider, model: String, key: String?) async throws -> ChatReply {
+    func undo(_ eventIDs: [Int]) async {
+        _ = try? await post("/api/undo", ["event_ids": eventIDs])
+        await refresh()
+    }
+
+    func send(history: [Message], provider: Provider, model: String, key: String?,
+              allowWrites: Bool) async throws -> ChatReply {
         var body: [String: Any] = [
+            "allow_writes": allowWrites,
             "provider": provider.id,
             "model": model.isEmpty ? provider.defaultModel : model,
             "messages": history.filter { $0.role != .failure }.map {

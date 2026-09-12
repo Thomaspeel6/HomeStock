@@ -4,6 +4,7 @@ struct ChatView: View {
     @Environment(Backend.self) private var backend
     @AppStorage("provider") private var providerID = "ollama"
     @AppStorage("model") private var model = ""
+    @AppStorage("allowWrites") private var allowWrites = true
 
     @State private var messages: [Message] = []
     @State private var draft = ""
@@ -55,8 +56,8 @@ struct ChatView: View {
         ScrollViewReader { proxy in
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 16) {
-                    ForEach(messages) { message in
-                        MessageRow(message: message).id(message.id)
+                    ForEach($messages) { $message in
+                        MessageRow(message: $message).id(message.id)
                     }
                     if thinking {
                         HStack(spacing: 8) {
@@ -104,9 +105,10 @@ struct ChatView: View {
             do {
                 let key = provider.needsKey ? Keychain.key(for: provider.id) : nil
                 let reply = try await backend.send(history: messages, provider: provider,
-                                                   model: model, key: key)
+                                                   model: model, key: key,
+                                                   allowWrites: allowWrites)
                 messages.append(Message(role: .assistant, text: reply.reply,
-                                        toolCalls: reply.toolCalls))
+                                        toolCalls: reply.toolCalls, undo: reply.undo))
                 // A turn that wrote to the event log changes what every other
                 // screen should show.
                 if reply.toolCalls.contains(where: \.wrote) { await backend.refresh() }
@@ -118,7 +120,8 @@ struct ChatView: View {
 }
 
 struct MessageRow: View {
-    let message: Message
+    @Environment(Backend.self) private var backend
+    @Binding var message: Message
 
     var body: some View {
         switch message.role {
@@ -137,6 +140,28 @@ struct MessageRow: View {
                 // prints: you can see what it looked at to get here.
                 if !message.toolCalls.isEmpty { ToolCallStrip(calls: message.toolCalls) }
                 Text(message.text).textSelection(.enabled)
+                // A small model asked a read-only question will still sometimes
+                // reach for a destructive tool, so anything a turn wrote can be
+                // withdrawn in one click.
+                if !message.undo.isEmpty {
+                    HStack(spacing: 8) {
+                        Image(systemName: message.undone ? "arrow.uturn.backward.circle.fill"
+                                                         : "square.and.pencil")
+                        Text(message.undone
+                             ? "Undone — your kitchen is back as it was."
+                             : "This changed your kitchen.")
+                        if !message.undone {
+                            Button("Undo") {
+                                let ids = message.undo
+                                message.undone = true
+                                Task { await backend.undo(ids) }
+                            }
+                            .buttonStyle(.link)
+                        }
+                    }
+                    .font(.caption)
+                    .foregroundStyle(message.undone ? AnyShapeStyle(.secondary) : AnyShapeStyle(Color.orange))
+                }
             }
         case .failure:
             Label(message.text, systemImage: "exclamationmark.triangle.fill")
