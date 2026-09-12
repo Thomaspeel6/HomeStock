@@ -306,7 +306,7 @@ def test_notes_and_barcodes_are_sent_as_text(monkeypatch):
 
     chat.read_captures("openai", model="gpt-5", api_key="k")
     sent = fake.sent[0]["payload"]["messages"]
-    user = [m for m in sent if m["role"] == "user"][0]
+    user = next(m for m in sent if m["role"] == "user")
     text = user["content"][0]["text"]
     assert "2 milk" in text and "5000119000011" in text
     assert "capture" in text                      # ids, so it can resolve them
@@ -325,7 +325,8 @@ def test_a_photographed_receipt_is_actually_sent_as_an_image(monkeypatch, tmp_pa
         fake = FakeProvider([(openai_reply if provider == "openai" else anthropic_reply)(text="Done.")])
         monkeypatch.setattr(chat, "_post", fake)
         chat.read_captures(provider, model="m", api_key="k")
-        content = [m for m in fake.sent[0]["payload"]["messages"] if m["role"] == "user"][0]["content"]
+        sent = fake.sent[0]["payload"]["messages"]
+        content = next(m for m in sent if m["role"] == "user")["content"]
         assert any(finder(part) for part in content), provider
 
 
