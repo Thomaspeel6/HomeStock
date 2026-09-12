@@ -29,6 +29,22 @@ https://py.sdk.modelcontextprotocol.io/v2/migration/
 **Effort:** M. **Depends on:** nothing — but it wants its own PR and a full CI run, since the
 MCP surface assertion in `ci.yml` is the only thing proving the tool surface survived.
 
+## P1 — Sparkle auto-update for the Mac app
+**What:** Wire Sparkle into HomeStock.app so installed copies update themselves, and have
+`scripts/release.sh` sign each DMG and regenerate `appcast.xml`.
+**Why:** Without it every update is a manual re-download, and the Gatekeeper first-launch
+dance repeats each time. Sparkle removes the quarantine flag on updates it installs, so users
+do it exactly once.
+**Context:** Attempted 2026-09-12 and backed out. Sparkle via SwiftPM compiles the entire
+framework from source — over ten minutes added to every build for everyone — and the framework
+then needs embedding by hand into a bundle assembled by `app/build.sh`, plus an `@rpath` entry.
+Options: use Sparkle's prebuilt XCFramework release rather than the source package, or move the
+app to an Xcode project like JoeBro (which has this working). The release side is already
+prepared: `release.sh` looks for `.sparkle-tools/` and writes the appcast when present.
+An EdDSA signing key still needs generating, and **backing up** — lose it and existing installs
+can never accept another update.
+**Effort:** M. **Depends on:** nothing.
+
 ## P1 — Loyalty-export import (Clubcard / Nectar)
 **What:** Import an itemised purchase history from a UK GDPR data request.
 **Why:** Probably the fastest route from empty to useful — years of history in one file,
