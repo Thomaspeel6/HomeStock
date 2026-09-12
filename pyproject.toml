@@ -3,14 +3,13 @@ name = "homestock-mcp"
 version = "0.1.0"
 description = "Local-first household inventory. Reads your shopping receipts, tells you what you have and what to buy. One file on your computer, zero cloud."
 readme = "README.md"
-license = { text = "MIT" }
+license = { text = "FSL-1.1-MIT" }
 authors = [{ name = "Thomas Peel" }]
 requires-python = ">=3.11"
 dependencies = ["mcp>=1.26,<2"]
 keywords = ["mcp", "inventory", "household", "pantry", "groceries", "local-first", "agents"]
 classifiers = [
   "Development Status :: 3 - Alpha",
-  "License :: OSI Approved :: MIT License",
   "Programming Language :: Python :: 3.11",
   "Programming Language :: Python :: 3.12",
   "Programming Language :: Python :: 3.13",

@@ -35,7 +35,7 @@ import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-from homestock import server
+from homestock import chat, server
 
 # Two secrets, because they answer two different questions and one of them
 # travels somewhere the other must not. TOKEN is embedded in the pages we serve
@@ -804,6 +804,10 @@ class Handler(BaseHTTPRequestHandler):
             self._page(CAPTURE_PAGE)
         elif path == "/api/state":
             self._json(200, build_state())
+        elif path == "/api/providers":
+            # What the settings screen offers, including whether each one sends
+            # anything off this machine. The UI states that per provider.
+            self._json(200, {"providers": chat.available_providers()})
         elif path == "/api/captures":
             self._json(200, list_captures("pending"))
         elif path == "/api/pairing":
@@ -866,6 +870,19 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json(400, {"error": f"unknown action {action!r}"})
             return self._json(400 if "error" in result else 200, result)
 
+        if path == "/api/chat":
+            msgs, provider = body.get("messages"), body.get("provider")
+            if not isinstance(msgs, list) or not isinstance(provider, str):
+                return self._json(400, {"error": "expected {messages, provider}"})
+            try:
+                return self._json(200, chat.chat(
+                    messages=msgs, provider=provider, model=body.get("model"),
+                    api_key=body.get("api_key"), base_url=body.get("base_url")))
+            except chat.ChatError as e:
+                # Intelligible to a person: it is rendered straight into the
+                # conversation, not into a log.
+                return self._json(502, {"error": str(e)})
+
         if path == "/api/capture":
             kind = body.get("kind")
             device = body.get("device") if isinstance(body.get("device"), str) else None
@@ -892,17 +909,37 @@ class Handler(BaseHTTPRequestHandler):
         pass  # a kitchen app should not spew a request log
 
 
+def _arg(name: str, default: str | None = None) -> str | None:
+    """--name value, from argv. Enough of an argument parser for two flags."""
+    if name in sys.argv:
+        i = sys.argv.index(name)
+        if i + 1 < len(sys.argv):
+            return sys.argv[i + 1]
+    return default
+
+
 def main(port: int = 7777, open_browser: bool = True, lan: bool | None = None) -> None:
     global LAN_MODE
     if lan is None:
         lan = "--lan" in sys.argv
     LAN_MODE = lan
+    port = int(_arg("--port", str(port)))
+    # The Mac app spawns this process and needs to know where it landed and
+    # what the write token is. Port 0 asks the OS for a free one, and the
+    # handshake line below is the only contract between the two halves.
+    handshake = "--handshake" in sys.argv
+    if handshake:
+        open_browser = False
 
     server.init_db()
     # Binding every interface is the point of LAN mode, and the reason it is
     # opt-in: see this module's docstring for what guards it.
     host = "0.0.0.0" if LAN_MODE else "127.0.0.1"
     httpd = ThreadingHTTPServer((host, port), Handler)
+    port = httpd.server_address[1]
+    if handshake:
+        print(json.dumps({"homestock": "ready", "port": port, "token": TOKEN,
+                          "db": str(Path(server.DB_PATH))}), flush=True)
     print(f"HomeStock is at http://127.0.0.1:{port}/")
     print(f"Database: {Path(server.DB_PATH)}")
     if LAN_MODE:
