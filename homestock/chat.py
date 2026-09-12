@@ -132,7 +132,7 @@ def run_tool(name: str, args: dict) -> Any:
         return tool.fn(**args)
     except TypeError as e:
         return {"error": f"bad arguments for {name}: {e}"}
-    except Exception as e:                                  # noqa: BLE001
+    except Exception as e:
         return {"error": f"{name} failed: {type(e).__name__}: {e}"}
 
 

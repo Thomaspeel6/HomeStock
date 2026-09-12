@@ -159,7 +159,11 @@ def test_every_provider_declares_whether_data_leaves_the_machine():
 def test_the_handshake_tells_the_app_where_the_backend_landed(tmp_path):
     """The Mac app spawns this process on port 0 and has no other way to learn
     the port or the write token."""
-    import subprocess, sys as _sys, os, json as _json, signal
+    import json as _json
+    import os
+    import signal
+    import subprocess
+    import sys as _sys
     env = {**os.environ, "HOMESTOCK_DB": str(tmp_path / "hs.db")}
     proc = subprocess.Popen(
         [_sys.executable, "-m", "homestock.ui_main", "--port", "0", "--handshake"],
