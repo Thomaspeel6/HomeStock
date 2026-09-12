@@ -103,9 +103,16 @@ explicit, separate opt-in, never bundled into a ToS.
   served over MCP, so a wheel without them is a broken install.
 - **The UI must not load a webfont or any remote asset.** A request to a font
   CDN would leak that this household runs HomeStock, from a product whose
-  headline claim is that nothing leaves the machine. System fonts only; the
-  design gets its character from the ledger treatment (mono tabular figures,
-  ruled sections, colour spent only where attention is needed).
+  headline claim is that nothing leaves the machine. System fonts only, no
+  remote images, no CDN anything. The design gets its character from treatment:
+  cards on a tinted ground, mono tabular figures, and colour spent only where
+  something wants acting on — a row that is simply fine gets no marker at all.
+  Both themes are defined as tokens on `:root`, redefined under
+  `prefers-color-scheme: dark` and again under `[data-theme="dark"]`.
+- **The window never recomputes the server's arithmetic.** `cycle_position` and
+  `days_over` come from `_item_stats()`; the JavaScript formats them and
+  nothing more. Two copies meant the page and an agent could disagree about the
+  same item, and only one copy had tests.
 - Public-facing docs a stranger reads first, in order: `README.md`,
   `CONTRIBUTING.md`, `SECURITY.md`, `CODE_OF_CONDUCT.md`, `CHANGELOG.md`.
   Keep the README honest about what is *not* built — the gap between the idea
