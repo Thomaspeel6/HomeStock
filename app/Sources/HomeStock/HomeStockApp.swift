@@ -10,8 +10,9 @@ struct HomeStockApp: App {
                 .environment(backend)
                 .task { await backend.start() }
                 .onDisappear { backend.stop() }
-                .frame(minWidth: 880, minHeight: 560)
+                .frame(minWidth: 820, minHeight: 520)
         }
+        .defaultSize(width: 1000, height: 680)
         .windowToolbarStyle(.unified)
         .commands {
             CommandGroup(after: .newItem) {
@@ -25,6 +26,12 @@ struct HomeStockApp: App {
             SettingsView().environment(backend)
         }
     }
+}
+
+extension Notification.Name {
+    /// An empty kitchen's only useful action is "add something", and the pane
+    /// that does it is somewhere else.
+    static let showAddPane = Notification.Name("HomeStockShowAddPane")
 }
 
 enum Pane: String, CaseIterable, Identifiable {
@@ -54,16 +61,41 @@ struct RootView: View {
     var body: some View {
         NavigationSplitView {
             List(selection: $selection) {
-                ForEach(Pane.allCases) { pane in
+                ForEach(Array(Pane.allCases.enumerated()), id: \.element) { index, pane in
                     Label(pane.rawValue, systemImage: pane.symbol)
                         .badge(count(for: pane))
                         .tag(pane)
+                        .keyboardShortcut(KeyEquivalent(Character("\(index + 1)")), modifiers: .command)
                 }
             }
             .listStyle(.sidebar)
             .navigationSplitViewColumnWidth(min: 190, ideal: 205, max: 260)
+            .onReceive(NotificationCenter.default.publisher(for: .showAddPane)) { _ in
+                selection = .add
+            }
             .safeAreaInset(edge: .bottom) { EngineStatusBar() }
         } detail: {
+            if backend.status == .starting {
+                ProgressView("Starting the engine…")
+                    .controlSize(.small)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else if case .failed(let message) = backend.status {
+                ContentUnavailableView {
+                    Label("HomeStock could not start", systemImage: "exclamationmark.triangle")
+                } description: {
+                    Text(message).textSelection(.enabled)
+                } actions: {
+                    Button("Try again") { Task { await backend.start() } }
+                }
+            } else {
+                detail
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var detail: some View {
+        Group {
             switch selection {
             case .shopping:
                 ItemListView(pane: .shopping, items: backend.state?.order ?? [],
