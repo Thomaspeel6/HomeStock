@@ -1,0 +1,11 @@
+version: 2
+updates:
+  # Pinned action versions rot silently and break CI for contributors.
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: monthly
+  - package-ecosystem: uv
+    directory: "/"
+    schedule:
+      interval: monthly
