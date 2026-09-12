@@ -235,6 +235,18 @@ final class Backend {
 
     // MARK: - Actions
 
+    /// Offered in Settings as a list. For Ollama the answer depends on what the
+    /// user has pulled, so no hardcoded default can be right.
+    func models(for provider: Provider, key: String?) async -> [String] {
+        struct Wrapper: Decodable { var models: [String] }
+        var path = "/api/models?provider=\(provider.id)"
+        if let key, !key.isEmpty,
+           let escaped = key.addingPercentEncoding(withAllowedCharacters: .alphanumerics) {
+            path += "&api_key=\(escaped)"
+        }
+        return (try? await get(path, as: Wrapper.self))?.models ?? []
+    }
+
     func refresh() async {
         state = try? await get("/api/state", as: KitchenState.self)
     }

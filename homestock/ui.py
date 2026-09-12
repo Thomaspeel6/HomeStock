@@ -31,6 +31,7 @@ import socket
 import sys
 import threading
 import time
+import urllib.parse
 import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -818,6 +819,16 @@ class Handler(BaseHTTPRequestHandler):
             # What the settings screen offers, including whether each one sends
             # anything off this machine. The UI states that per provider.
             self._json(200, {"providers": chat.available_providers()})
+        elif path == "/api/models":
+            # Which models this provider can serve, so the settings screen can
+            # offer a list instead of asking someone to type a name blind.
+            q = urllib.parse.parse_qs(self.path.partition("?")[2])
+            provider = (q.get("provider") or [""])[0]
+            try:
+                self._json(200, {"models": chat.list_models(
+                    provider, api_key=(q.get("api_key") or [None])[0])})
+            except chat.ChatError as e:
+                self._json(502, {"error": str(e)})
         elif path == "/api/captures":
             self._json(200, list_captures("pending"))
         elif path == "/api/pairing":

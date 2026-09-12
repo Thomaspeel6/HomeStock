@@ -5,6 +5,8 @@ struct SettingsView: View {
     @AppStorage("provider") private var providerID = "ollama"
     @AppStorage("model") private var model = ""
     @State private var apiKey = ""
+    @State private var models: [String] = []
+    @State private var loadingModels = false
 
     private var provider: Provider? { backend.providers.first { $0.id == providerID } }
 
@@ -14,16 +16,43 @@ struct SettingsView: View {
                 Picker("Provider", selection: $providerID) {
                     ForEach(backend.providers) { Text($0.label).tag($0.id) }
                 }
-                TextField("Model", text: $model,
-                          prompt: Text(provider?.defaultModel ?? ""))
+                // A free-text box meant typing a model name blind and finding
+                // out it was wrong only when a message failed.
+                if models.isEmpty {
+                    LabeledContent("Model") {
+                        HStack(spacing: 8) {
+                            if loadingModels {
+                                ProgressView().controlSize(.small)
+                            } else {
+                                Text(needsKeyFirst ? "Add a key, then load models"
+                                                   : "No models found")
+                                    .foregroundStyle(.secondary)
+                            }
+                            Button("Reload", action: loadModels)
+                                .controlSize(.small)
+                                .disabled(loadingModels || needsKeyFirst)
+                        }
+                    }
+                } else {
+                    Picker("Model", selection: $model) {
+                        Text("Choose…").tag("")
+                        ForEach(models, id: \.self) { Text($0).tag($0) }
+                    }
+                }
+                if let hint = provider?.hint, models.isEmpty {
+                    Text(hint).font(.caption).foregroundStyle(.secondary)
+                }
 
                 if provider?.needsKey == true {
                     SecureField("API key", text: $apiKey)
                         .onSubmit { save() }
                     HStack {
                         Spacer()
-                        Button("Save key", action: save)
-                            .disabled(apiKey.isEmpty)
+                        Button("Save key and load models") {
+                            save()
+                            loadModels()
+                        }
+                        .disabled(apiKey.isEmpty)
                     }
                 }
             }
@@ -58,15 +87,37 @@ struct SettingsView: View {
         .formStyle(.grouped)
         .frame(width: 480)
         .fixedSize(horizontal: false, vertical: true)
-        .onAppear { apiKey = provider.flatMap { Keychain.key(for: $0.id) } ?? "" }
+        .onAppear {
+            apiKey = provider.flatMap { Keychain.key(for: $0.id) } ?? ""
+            loadModels()
+        }
         .onChange(of: providerID) {
             apiKey = provider.flatMap { Keychain.key(for: $0.id) } ?? ""
             model = ""
+            models = []
+            loadModels()
         }
+        .onChange(of: backend.providers.count) { loadModels() }
+    }
+
+    private var needsKeyFirst: Bool {
+        provider?.needsKey == true && apiKey.isEmpty
     }
 
     private func save() {
         guard let provider else { return }
         Keychain.set(apiKey, for: provider.id)
+    }
+
+    private func loadModels() {
+        guard let provider, !needsKeyFirst else { models = []; return }
+        loadingModels = true
+        Task {
+            let found = await backend.models(for: provider, key: apiKey)
+            models = found
+            loadingModels = false
+            // Nothing chosen yet, or a choice this provider cannot serve.
+            if !found.contains(model) { model = found.first ?? "" }
+        }
     }
 }

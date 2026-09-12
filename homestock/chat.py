@@ -45,9 +45,10 @@ PROVIDERS: dict[str, dict[str, Any]] = {
         "wire": "openai",
         "base_url": "http://127.0.0.1:11434/v1",
         "needs_key": False,
-        "default_model": "llama3.1",
+        "default_model": "",
         "leaves_machine": False,
         "note": "Runs locally. Nothing leaves this computer.",
+        "hint": "Needs Ollama running. Pick one of the models you have pulled.",
     },
     "openrouter": {
         "label": "OpenRouter",
@@ -103,6 +104,42 @@ def available_providers() -> list[dict]:
     """What the settings UI offers, and what each one costs in privacy."""
     return [{"id": pid, **{k: v for k, v in p.items() if k != "wire"}}
             for pid, p in PROVIDERS.items()]
+
+
+def _get(url: str, headers: dict) -> dict:
+    req = urllib.request.Request(url, headers=headers)
+    try:
+        with urllib.request.urlopen(req, timeout=20) as r:
+            return json.loads(r.read())
+    except urllib.error.HTTPError as e:
+        raise ChatError(f"{e.code} from the provider: "
+                        f"{e.read().decode('utf-8', 'replace')[:200]}") from e
+    except (urllib.error.URLError, TimeoutError) as e:
+        raise ChatError(f"could not reach the provider: {e}") from e
+
+
+def list_models(provider: str, api_key: str | None = None,
+                base_url: str | None = None) -> list[str]:
+    """Which models this provider can actually serve right now.
+
+    Settings used to be a free-text box, which meant typing a model name blind
+    and finding out it was wrong only when a message failed. For Ollama it is
+    worse than a typo: the answer depends on what the user has pulled, so no
+    hardcoded default can be right.
+    """
+    cfg = PROVIDERS.get(provider)
+    if cfg is None:
+        raise ChatError(f"unknown provider {provider!r}")
+    if cfg["needs_key"] and not api_key:
+        return []
+    base = (base_url or cfg["base_url"]).rstrip("/")
+    headers = ({"x-api-key": api_key or "", "anthropic-version": "2023-06-01"}
+               if cfg["wire"] == "anthropic"
+               else ({"authorization": f"Bearer {api_key}"} if api_key else {}))
+    data = _get(f"{base}/models", headers)
+    rows = data.get("data") or data.get("models") or []
+    names = [r.get("id") or r.get("name") for r in rows if isinstance(r, dict)]
+    return sorted(n for n in names if n)
 
 
 def tool_schemas(wire: str) -> list[dict]:
@@ -208,6 +245,8 @@ def chat(messages: list[dict], provider: str, model: str | None = None,
         raise ChatError(f"{cfg['label']} needs an API key. Add one in Settings.")
 
     model = model or cfg["default_model"]
+    if not model:
+        raise ChatError(f"Choose a model for {cfg['label']} in Settings.")
     base_url = (base_url or cfg["base_url"]).rstrip("/")
     tools = tool_schemas(cfg["wire"]) if use_tools else []
     run_round = _anthropic_round if cfg["wire"] == "anthropic" else _openai_round
