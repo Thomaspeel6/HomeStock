@@ -16,6 +16,19 @@ now reports it: `days_since_ingest`, `receipt_lines`, `stale`.
 **Why:** PRD v2 §12 made this the gate for everything. It came due 2026-09-10 and was never measured.
 **Effort:** S. **Depends on:** nothing.
 
+## P1 — Migrate to the MCP SDK v2
+**What:** `mcp` 2.x renames FastMCP to MCPServer (`from mcp.server.mcpserver import MCPServer`)
+and changes other APIs. `pyproject.toml` pins `mcp>=1.26,<2` to keep v1 running.
+**Why:** v1 will not be maintained forever, and the pin is what stands between this repo and
+every future SDK fix.
+**Context:** Attempted during the 2026-09-12 maintenance pass and backed out: it is a real
+migration, not a version bump. Every `@mcp.tool()` decorator, the `.fn` unwrapping that
+`homestock/ui.py` and both test files rely on to call tools directly, the two prompts and the
+resource template all need checking against the v2 API. Migration guide:
+https://py.sdk.modelcontextprotocol.io/v2/migration/
+**Effort:** M. **Depends on:** nothing — but it wants its own PR and a full CI run, since the
+MCP surface assertion in `ci.yml` is the only thing proving the tool surface survived.
+
 ## P1 — Loyalty-export import (Clubcard / Nectar)
 **What:** Import an itemised purchase history from a UK GDPR data request.
 **Why:** Probably the fastest route from empty to useful — years of history in one file,

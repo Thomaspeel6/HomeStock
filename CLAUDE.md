@@ -16,7 +16,7 @@ OCR pipelines and per-retailer parsers. Do not build from it.
 ## Status
 
 Alpha, macOS-first. Engine, pantry window, and capture from phone or laptop
-built and tested (57 tests; CI on macOS and Linux, Python 3.11–3.13). The `.app` bundle,
+built and tested (81 tests; CI on macOS and Linux, Python 3.11–3.13). The `.app` bundle,
 built-in email ingestion, and PyPI release are specified in PRD v3 but **not
 built** — installation still needs a terminal.
 
