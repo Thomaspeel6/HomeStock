@@ -1,0 +1,62 @@
+name: Add a retailer
+description: HomeStock cannot read receipts from a shop you use.
+title: "Retailer: "
+labels: ["retailer"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        This is the most useful thing you can ask for, and the easiest to
+        contribute yourself — a recipe is a small YAML file, never code. See
+        [CONTRIBUTING.md](../blob/main/CONTRIBUTING.md) and
+        [recipes/TEMPLATE.md](../blob/main/recipes/TEMPLATE.md).
+
+        **Redact everything you paste here.** No names, addresses, card digits
+        or order links. Three to five item lines is plenty.
+  - type: input
+    id: retailer
+    attributes:
+      label: Retailer and country
+      placeholder: Sainsbury's (GB)
+    validations:
+      required: true
+  - type: input
+    id: sender
+    attributes:
+      label: Sender domain the receipts arrive from
+      placeholder: sainsburys.co.uk
+    validations:
+      required: true
+  - type: dropdown
+    id: which_email
+    attributes:
+      label: Which email carries the real line items?
+      description: >
+        For a grocer that substitutes items this matters more than anything
+        else — it must be the email reflecting what was actually delivered,
+        not what was ordered.
+      options:
+        - Order confirmation
+        - Delivery receipt / "what we delivered"
+        - Invoice
+        - Not sure
+    validations:
+      required: true
+  - type: textarea
+    id: sample
+    attributes:
+      label: A redacted sample of the item lines
+      render: text
+      placeholder: |
+        Order number: XXXX-XXXXXX
+        Semi Skimmed Milk 2.27L ........ 1 @ £1.55
+        Braeburn Apples Loose .......... 0.62kg @ £1.24
+    validations:
+      required: false
+  - type: checkboxes
+    id: redacted
+    attributes:
+      label: Confirm
+      options:
+        - label: I have removed all names, addresses, payment details and order links.
+          required: true

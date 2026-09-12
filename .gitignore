@@ -1,4 +1,17 @@
+# Your kitchen. Never commit this.
 homestock.db
 *.db-wal
 *.db-shm
+
+# Photographed receipts land beside the database. They contain addresses,
+# card digits and everything you bought — committing one would publish it.
+captures/
+
+# Python
 __pycache__/
+*.egg-info/
+.venv/
+.pytest_cache/
+.ruff_cache/
+dist/
+build/
