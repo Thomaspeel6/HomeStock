@@ -44,7 +44,7 @@ Then:
 
 ```bash
 git clone https://github.com/Thomaspeel6/HomeStock && cd HomeStock
-uv run pytest -q          # 57 tests — confirms it works on your machine
+uv run pytest -q          # 81 tests — confirms it works on your machine
 uv run homestock-ui       # opens your kitchen at http://127.0.0.1:7777
 ```
 
@@ -238,7 +238,7 @@ don't become three items with three wrong repurchase cycles.
 | `add_alias(alias, item)` / `list_aliases(item?)` | Teach it that "TESCO SEMI SKMD MILK" is the milk it already knows. |
 | `merge_items(from_item, into_item)` | Fix name drift without losing history — and learns the alias, so it can't recur. |
 | `void_event(source_ref, line_no?)` | Fix a *receipt*: void, then re-insert the corrected line. |
-| `get_events(item?, since?)` | Raw event log — every estimate is explainable. |
+| `get_events(item?, since?, limit?, offset?)` | Raw event log, paged — every estimate is explainable. |
 | `record_ingest_run(...)` | Ingestion heartbeat + backfill cursor. |
 | `get_health()` | Diagnostics. Is ingestion actually running? |
 

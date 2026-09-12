@@ -36,7 +36,7 @@ receipts and expected extractions, scored automatically.
 
 ```bash
 git clone https://github.com/Thomaspeel6/HomeStock && cd HomeStock
-uv run pytest -q                          # 57 tests
+uv run pytest -q                          # 81 tests
 uv run ruff check .                        # lint
 uv run python scripts/demo.py --serve      # a fake household, in the real UI
 ```
