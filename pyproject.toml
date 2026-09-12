@@ -6,7 +6,7 @@ readme = "README.md"
 license = { text = "MIT" }
 authors = [{ name = "Thomas Peel" }]
 requires-python = ">=3.11"
-dependencies = ["mcp>=1.26,<2"]
+dependencies = ["mcp>=1.26,<3"]
 keywords = ["mcp", "inventory", "household", "pantry", "groceries", "local-first", "agents"]
 classifiers = [
   "Development Status :: 3 - Alpha",
