@@ -56,8 +56,9 @@ final class Backend {
         proc.environment = env
 
         let pipe = Pipe()
+        let errors = Pipe()
         proc.standardOutput = pipe
-        proc.standardError = FileHandle.nullDevice
+        proc.standardError = errors
         try proc.run()
         self.process = proc
 
@@ -80,7 +81,15 @@ final class Backend {
                 return
             }
         }
-        throw Failure("The HomeStock engine did not start. Check that Python 3.11 or newer is installed.")
+        // Whatever Python said on the way down is the only useful thing here,
+        // so it goes in front of the user rather than into a null device.
+        proc.terminate()
+        let detail = String(data: errors.fileHandleForReading.availableData, encoding: .utf8)?
+            .split(separator: "\n").suffix(3).joined(separator: " ")
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        throw Failure(detail.isEmpty
+            ? "The HomeStock engine did not start, and said nothing about why. Interpreter: \(python)"
+            : "The HomeStock engine did not start: \(detail)")
     }
 
     private struct Handshake: Decodable { var port: Int; var token: String }
@@ -101,7 +110,9 @@ final class Backend {
            FileManager.default.fileExists(atPath: bundled.appendingPathComponent("homestock").path) {
             return bundled.path
         }
-        return FileManager.default.currentDirectoryPath
+        // `swift run` from app/ — the engine is the checkout one level up.
+        let cwd = FileManager.default.currentDirectoryPath
+        return cwd.hasSuffix("/app") ? String(cwd.dropLast(4)) : cwd
     }
 
     /// The engine needs Python 3.11 or newer. macOS still ships 3.9 at
@@ -111,6 +122,16 @@ final class Backend {
     static let minimumPython = (3, 11)
 
     static var pythonPath: String? {
+        // The bundled runtime first, always. The dependencies inside the app
+        // are compiled wheels built for *this* interpreter version, so running
+        // the engine on the user's Homebrew Python loads a pydantic_core built
+        // for a different ABI and dies at import. A system interpreter is only
+        // a fallback for `swift run` during development.
+        if let bundled = Bundle.main.resourceURL?
+            .appendingPathComponent("python/bin/python3").path,
+           FileManager.default.isExecutableFile(atPath: bundled) {
+            return bundled
+        }
         let candidates = [
             "/opt/homebrew/bin/python3",
             "/usr/local/bin/python3",
