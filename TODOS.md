@@ -60,6 +60,22 @@ sender filter, fetching, cursor and skip logging; the model still reads the rece
 scope is restricted and needs a Google security assessment for public distribution.
 **Effort:** L. **Depends on:** eval harness (two paths, no scoring, is how both rot).
 
+## P2 — A small model fine-tuned for these tools
+**What:** LoRA fine-tune a 3–4B model on HomeStock's tool surface, ship it as GGUF on
+Ollama/HuggingFace, and let the app offer it as a download.
+**Why:** Observed 2026-09-12 — asked "what am I about to waste?", llama3.2:3b called
+`discard_item`, a destructive tool, and narrated a tool call in its reply text. gemma4:e4b
+handled the same question correctly. Tool use is where small models fail, and it is the whole
+interaction model here, so a model tuned for it is the difference between the local option
+being usable and being a demo.
+**Context:** The tools are *deterministic*, so training traces can be auto-verified by
+executing them and checking the result — most fine-tuning datasets cannot be. That makes the
+data cheap and honest. Pick a base whose licence permits redistribution: Qwen2.5 is Apache 2.0
+and clean; Llama 3.2's community licence has attribution and naming rules; Gemma has its own
+terms. Worth choosing deliberately, having just moved to FSL to control redistribution.
+**Effort:** L. **Depends on:** the eval harness — you cannot tell whether a fine-tune helped
+without measuring, and the eval doubles as the trace verifier.
+
 ## P1 — Eval harness (milestone B)
 **What:** Recipes ship with example receipts and expected extractions, scored automatically.
 **Why:** Was a nice-to-have; PRD v3's two ingestion paths make it blocking. Hand-validation by a

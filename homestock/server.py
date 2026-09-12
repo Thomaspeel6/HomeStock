@@ -616,6 +616,29 @@ def record_ingest_run(
     return {"earliest_window_start": cursor}
 
 
+def max_event_id() -> int:
+    """Highest event id right now. Bracketing a tool call with this is how a
+    chat turn learns exactly which rows it created, without every tool having
+    to grow a 'tag what you wrote' parameter."""
+    with get_db() as conn:
+        return conn.execute("SELECT COALESCE(MAX(id), 0) FROM events").fetchone()[0]
+
+
+def void_event_ids(ids: list[int]) -> int:
+    """Void specific events. Used to undo one chat turn.
+
+    Voiding, never deleting: the log is append-only, so an undone correction
+    leaves a record that it happened and was withdrawn."""
+    ids = [i for i in ids if isinstance(i, int) and not isinstance(i, bool)]
+    if not ids:
+        return 0
+    with get_db() as conn:
+        placeholders = ",".join("?" * len(ids))
+        cur = conn.execute(
+            f"UPDATE events SET voided = 1 WHERE id IN ({placeholders}) AND voided = 0", ids)
+        return cur.rowcount
+
+
 @mcp.tool()
 def get_events(item: str | None = None, since: str | None = None,
                limit: int = 200, offset: int = 0) -> dict:

@@ -891,6 +891,14 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json(400, {"error": f"unknown action {action!r}"})
             return self._json(400 if "error" in result else 200, result)
 
+        if path == "/api/undo":
+            # Undo one chat turn. Voids, never deletes: the log is append-only,
+            # so a withdrawn correction leaves a record that it happened.
+            ids = body.get("event_ids")
+            if not isinstance(ids, list):
+                return self._json(400, {"error": "expected {event_ids}"})
+            return self._json(200, {"undone": server.void_event_ids(ids)})
+
         if path == "/api/chat":
             msgs, provider = body.get("messages"), body.get("provider")
             if not isinstance(msgs, list) or not isinstance(provider, str):
@@ -898,7 +906,8 @@ class Handler(BaseHTTPRequestHandler):
             try:
                 return self._json(200, chat.chat(
                     messages=msgs, provider=provider, model=body.get("model"),
-                    api_key=body.get("api_key"), base_url=body.get("base_url")))
+                    api_key=body.get("api_key"), base_url=body.get("base_url"),
+                    allow_writes=body.get("allow_writes", True)))
             except chat.ChatError as e:
                 # Intelligible to a person: it is rendered straight into the
                 # conversation, not into a log.

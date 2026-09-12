@@ -109,8 +109,10 @@ struct ToolCall: Decodable, Hashable {
 struct ChatReply: Decodable {
     var reply: String
     var toolCalls: [ToolCall]
+    /// Every event this turn wrote, so one Undo can withdraw the lot.
+    var undo: [Int]
     enum CodingKeys: String, CodingKey {
-        case reply
+        case reply, undo
         case toolCalls = "tool_calls"
     }
 }
@@ -121,4 +123,6 @@ struct Message: Identifiable, Hashable {
     var role: Role
     var text: String
     var toolCalls: [ToolCall] = []
+    var undo: [Int] = []
+    var undone = false
 }
