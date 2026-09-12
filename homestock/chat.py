@@ -18,9 +18,11 @@ tool added to server.py is available in chat the moment it exists.
 
 from __future__ import annotations
 
+import base64
 import json
 import urllib.error
 import urllib.request
+from pathlib import Path
 from typing import Any
 
 from homestock import server
@@ -29,7 +31,13 @@ from homestock import server
 # we have. A kitchen question needs two or three rounds; anything past this is
 # a loop, and an unbounded loop against a metered API is the user's money.
 MAX_TOOL_ROUNDS = 6
+# A cloud provider that has not answered in two minutes is not going to. A
+# local model reading two receipt photographs on someone's laptop genuinely
+# takes longer than that, and timing it out looks identical to a broken app.
 HTTP_TIMEOUT = 120
+LOCAL_HTTP_TIMEOUT = 900
+# A receipt photo bigger than this is not a receipt photo.
+MAX_IMAGE_BYTES = 12 * 1024 * 1024
 
 # Tools that change the event log. The model may call them, but a UI can show
 # the user which turns wrote something rather than leaving it to be discovered.
@@ -185,12 +193,12 @@ def run_tool(name: str, args: dict) -> tuple[Any, list[int]]:
     return result, list(range(before + 1, after + 1))
 
 
-def _post(url: str, payload: dict, headers: dict) -> dict:
+def _post(url: str, payload: dict, headers: dict, timeout: int = HTTP_TIMEOUT) -> dict:
     body = json.dumps(payload).encode()
     req = urllib.request.Request(url, data=body, method="POST",
                                  headers={"content-type": "application/json", **headers})
     try:
-        with urllib.request.urlopen(req, timeout=HTTP_TIMEOUT) as r:
+        with urllib.request.urlopen(req, timeout=timeout) as r:
             return json.loads(r.read())
     except urllib.error.HTTPError as e:
         detail = e.read().decode("utf-8", "replace")[:400]
@@ -198,7 +206,11 @@ def _post(url: str, payload: dict, headers: dict) -> dict:
     except urllib.error.URLError as e:
         raise ChatError(f"could not reach the provider: {e.reason}") from e
     except TimeoutError as e:
-        raise ChatError("the provider timed out") from e
+        raise ChatError(f"the provider did not answer within {timeout}s") from e
+
+
+def _timeout(cfg: dict) -> int:
+    return HTTP_TIMEOUT if cfg["leaves_machine"] else LOCAL_HTTP_TIMEOUT
 
 
 class ChatError(Exception):
@@ -211,7 +223,7 @@ def _openai_round(cfg, model, key, messages, tools, base_url):
     if tools:
         payload["tools"] = tools
     headers = {"authorization": f"Bearer {key}"} if key else {}
-    data = _post(f"{base_url}/chat/completions", payload, headers)
+    data = _post(f"{base_url}/chat/completions", payload, headers, _timeout(cfg))
     if "choices" not in data:
         raise ChatError(f"unexpected reply from the provider: {json.dumps(data)[:300]}")
     msg = data["choices"][0]["message"]
@@ -230,7 +242,7 @@ def _anthropic_round(cfg, model, key, messages, tools, base_url):
     if tools:
         payload["tools"] = tools
     data = _post(f"{base_url}/messages", payload,
-                 {"x-api-key": key or "", "anthropic-version": "2023-06-01"})
+                 {"x-api-key": key or "", "anthropic-version": "2023-06-01"}, _timeout(cfg))
     if "content" not in data:
         raise ChatError(f"unexpected reply from the provider: {json.dumps(data)[:300]}")
     text = "".join(b.get("text", "") for b in data["content"] if b.get("type") == "text")
@@ -298,3 +310,132 @@ def chat(messages: list[dict], provider: str, model: str | None = None,
                           "content": json.dumps(r, default=str)} for c, r in results)
 
     raise ChatError("the model kept calling tools without answering")  # unreachable
+
+
+# --- Emptying the inbox -----------------------------------------------------
+
+READ_CAPTURES_PROMPT = """Work the capture inbox.
+
+Each capture below is something bought that is not yet in the kitchen. For each:
+
+1. Work out the items. A note like "2 milk" is two litres of milk. A barcode is
+   a product number — if you cannot identify it confidently, skip it and say so.
+   A photographed receipt: read the line items, ignoring totals, discounts,
+   loyalty points and the shop's address.
+2. Call add_items once per capture with source matching its kind ('photo' for a
+   receipt photo, 'barcode' for a barcode, 'manual' for a typed note) and
+   source_ref set to "capture:<id>". A photographed receipt carries its own
+   date — use it, in YYYY-MM-DD. Notes and barcodes may default to today.
+3. Call resolve_capture(capture_id, status='done'). If you could not read it,
+   use status='skipped' with a note saying why. Never guess at a blurry photo:
+   an honest skip is worth more than an invented row.
+
+Call get_stock() first and reuse existing item names exactly, so the same thing
+does not arrive under two names.
+
+Finish with one short sentence per capture saying what you recorded or skipped."""
+
+# What the providers actually accept. HEIC and AVIF are stored faithfully when
+# that is what arrived, but no model reads them, so they are reported rather
+# than sent and silently failing.
+READABLE_IMAGE_TYPES = {"jpg": "image/jpeg", "jpeg": "image/jpeg",
+                        "png": "image/png", "webp": "image/webp"}
+
+
+def _image_block(path: str, wire: str) -> dict | None:
+    """A photographed receipt is only readable by a model that can see it."""
+    p = Path(path)
+    if not p.is_file() or p.stat().st_size > MAX_IMAGE_BYTES:
+        return None
+    mime = READABLE_IMAGE_TYPES.get(p.suffix.lower().lstrip("."))
+    if not mime:
+        return None
+    data = base64.b64encode(p.read_bytes()).decode()
+    if wire == "anthropic":
+        return {"type": "image",
+                "source": {"type": "base64", "media_type": mime, "data": data}}
+    return {"type": "image_url", "image_url": {"url": f"data:{mime};base64,{data}"}}
+
+
+def read_captures(provider: str, model: str | None = None, api_key: str | None = None,
+                  base_url: str | None = None) -> dict:
+    """Turn everything in the capture inbox into stock.
+
+    The four doors were built and then nothing emptied what they filled: the
+    design said "an agent works the queue" and no agent existed. The app has a
+    model configured, so it does the job itself.
+    """
+    cfg = PROVIDERS.get(provider)
+    if cfg is None:
+        raise ChatError(f"unknown provider {provider!r}")
+
+    pending = server.mcp._tool_manager.get_tool("list_captures").fn("pending")
+    if not pending:
+        return {"read": 0, "reply": "Nothing waiting.", "tool_calls": [], "undo": []}
+
+    parts: list[dict] = []
+    lines: list[str] = []
+    unreadable: list[str] = []
+    for c in pending:
+        if c["kind"] == "receipt_photo":
+            block = _image_block(c.get("path") or "", cfg["wire"])
+            if block is None:
+                unreadable.append(
+                    f"capture {c['id']}: the image is missing, too large, or in a format "
+                    "models cannot read (HEIC and AVIF are not accepted — "
+                    "re-take it as JPEG)")
+                continue
+            lines.append(f"- capture {c['id']}: a photographed receipt (image below)")
+            parts.append(block)
+        else:
+            lines.append(f"- capture {c['id']}: {c['kind']} — {c.get('text')!r}")
+
+    if not lines:
+        return {"read": 0, "reply": "; ".join(unreadable) or "Nothing readable.",
+                "tool_calls": [], "undo": []}
+
+    content = [{"type": "text", "text": READ_CAPTURES_PROMPT + "\n\n" + "\n".join(lines)}, *parts]
+    out = chat([{"role": "user", "content": content}], provider=provider, model=model,
+               api_key=api_key, base_url=base_url)
+
+    # Verify rather than believe. Observed with a local vision model: it
+    # narrated a full receipt for two photographs, invented the same fruit for
+    # both, had every add_items rejected, and then marked all four captures
+    # done anyway. A capture marked read that produced nothing is worse than
+    # one left waiting — the photo is gone from the inbox and never became
+    # stock. So anything that wrote nothing goes back in the queue.
+    ids = [c["id"] for c in pending]
+    recorded, reopened = _verify_captures(ids)
+    out["read"] = len(recorded)
+    out["reopened"] = reopened
+    notes = []
+    if recorded:
+        notes.append(f"Recorded {len(recorded)} of {len(ids)} captures.")
+    if reopened:
+        notes.append(f"{len(reopened)} produced nothing and are back in the inbox "
+                     "— the model described items it did not manage to record.")
+    notes.extend(unreadable)
+    if notes:
+        out["reply"] = (out["reply"].strip() + "\n\n" + "\n".join(notes)).strip()
+    return out
+
+
+def _verify_captures(ids: list[int]) -> tuple[list[int], list[int]]:
+    """Which captures actually produced events, and which were falsely closed."""
+    resolve = server.mcp._tool_manager.get_tool("resolve_capture").fn
+    recorded, reopened = [], []
+    with server.get_db() as conn:
+        for cid in ids:
+            live = conn.execute(
+                "SELECT COUNT(*) FROM events WHERE source_ref = ? AND voided = 0",
+                (f"capture:{cid}",)).fetchone()[0]
+            if live:
+                recorded.append(cid)
+                continue
+            row = conn.execute("SELECT status FROM captures WHERE id = ?", (cid,)).fetchone()
+            if row and row["status"] == "done":
+                reopened.append(cid)
+    for cid in reopened:
+        resolve(cid, status="pending",
+                note="Reopened: marked read but nothing was recorded.")
+    return recorded, reopened

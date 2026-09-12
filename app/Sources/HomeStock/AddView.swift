@@ -16,10 +16,14 @@ struct AddView: View {
     @State private var failed = false
     @State private var dropTargeted = false
     @State private var showingImporter = false
+    @State private var reading = false
+    @AppStorage("provider") private var providerID = "ollama"
+    @AppStorage("model") private var model = ""
 
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 22) {
+                if pending > 0 { inbox }
                 receiptDrop
                 typed
                 phone
@@ -37,20 +41,79 @@ struct AddView: View {
         }
         .safeAreaInset(edge: .bottom) {
             if let message {
-                Label(message, systemImage: failed ? "exclamationmark.triangle.fill" : "checkmark.circle.fill")
-                    .foregroundStyle(failed ? .orange : .green)
-                    .font(.callout)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(.horizontal, 22).padding(.vertical, 10)
-                    .background(.bar)
+                HStack(alignment: .top, spacing: 8) {
+                    Image(systemName: failed ? "exclamationmark.triangle.fill" : "checkmark.circle.fill")
+                        .foregroundStyle(failed ? Color.orange : Color.green)
+                    Text(message).textSelection(.enabled)
+                    Spacer(minLength: 8)
+                    Button {
+                        self.message = nil
+                    } label: {
+                        Image(systemName: "xmark")
+                    }
+                    .buttonStyle(.borderless)
+                }
+                .font(.callout)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal, 22).padding(.vertical, 10)
+                .background(.bar)
             }
         }
     }
 
+    private var pending: Int { backend.state?.pendingCaptures ?? 0 }
+
+    private var provider: Provider? {
+        backend.providers.first { $0.id == providerID } ?? backend.providers.first
+    }
+
     private var pendingLabel: String {
-        let n = backend.state?.pendingCaptures ?? 0
-        return n == 0 ? "Nothing waiting to be read"
-                      : "\(n) waiting for your agent to read"
+        pending == 0 ? "Nothing waiting to be read"
+                     : "\(pending) waiting to be read"
+    }
+
+    /// Capture has to be instant and offline; reading needs a model. Keeping
+    /// them apart is the design — but the reading half has to exist.
+    private var inbox: some View {
+        GroupBox {
+            HStack(spacing: 14) {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(pending == 1 ? "1 capture waiting" : "\(pending) captures waiting")
+                        .font(.callout.weight(.medium))
+                    Text(reading
+                         ? "Reading them with \(provider?.label ?? "your model")…"
+                         : "Photos, barcodes and notes become items once a model reads them.")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+                Spacer()
+                if reading {
+                    ProgressView().controlSize(.small)
+                } else {
+                    Button("Read them now", action: readInbox)
+                        .buttonStyle(.borderedProminent)
+                        .disabled(provider == nil)
+                }
+            }
+            .padding(.vertical, 4)
+        } label: {
+            Label("Inbox", systemImage: "tray.full")
+        }
+    }
+
+    private func readInbox() {
+        guard let provider else { return }
+        reading = true
+        Task {
+            defer { reading = false }
+            do {
+                let key = provider.needsKey ? Keychain.key(for: provider.id) : nil
+                let result = try await backend.readCaptures(provider: provider,
+                                                            model: model, key: key)
+                show(result.reply, failed: result.read == 0, sticky: true)
+            } catch {
+                show(error.localizedDescription, failed: true)
+            }
+        }
     }
 
     // MARK: - Receipt photo
@@ -197,9 +260,10 @@ struct AddView: View {
         }
     }
 
-    private func show(_ text: String, failed: Bool) {
+    private func show(_ text: String, failed: Bool, sticky: Bool = false) {
         message = text
         self.failed = failed
+        guard !sticky else { return }   // a summary of what was recorded is worth reading
         Task {
             try? await Task.sleep(nanoseconds: 4_000_000_000)
             if message == text { message = nil }
